@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.24.3"
+  GITLEAKS_LINUX_X64_SHA256: "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c"
+  UV_VERSION: "0.8.3"
+
+jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Install gitleaks (checksum verified)
+        run: |
+          set -euo pipefail
+          ARCHIVE="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${ARCHIVE}" \
+            -o "${ARCHIVE}"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          tar -xzf "${ARCHIVE}" gitleaks
+          chmod +x ./gitleaks
+      - name: Scan for secrets
+        run: ./gitleaks detect --source . --verbose --redact --config .gitleaks.toml
+
+  backend:
+    name: Lint, audit & test
+    runs-on: ubuntu-latest
+    needs: secret-scan
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: |
+          curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync dependencies (frozen lock)
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check app tests
+
+      - name: pip-audit (fail on High+)
+        run: |
+          uv export --frozen --no-dev --no-hashes -o /tmp/req-frozen.txt
+          uv run pip-audit -r /tmp/req-frozen.txt --progress-spinner off
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          uv export --frozen --no-dev --no-hashes -o /tmp/req-frozen.txt
+          uv run pip-audit -r /tmp/req-frozen.txt --format cyclonedx-json -o sbom-python.json
+
+      - name: Upload Python SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-python
+          path: sbom-python.json
+          if-no-files-found: error
+
+      - name: Run tests
+        env:
+          APP_ENV: local
+          QUE_SERVICE_KEY: ci-test-service-key-not-for-production
+          QUE_JWT_SECRET: ci-test-que-jwt-secret-not-for-production-xx
+          ALLOW_INSECURE_LOCAL_NO_AUTH: "false"
+          LLM_API_KEY: ""
+          LLM_MODEL: test-model
+        run: uv run python -m pytest tests/ -v
