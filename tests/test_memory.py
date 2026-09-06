@@ -1,0 +1,127 @@
+"""Short-term memory (LangGraph checkpointer) unit tests."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+
+from app.graphs.memory import (
+    append_assistant,
+    make_thread_id,
+    merge_dialog_with_incoming,
+    runnable_config,
+)
+from app.graphs.nodes import prepare_node
+from app.graphs.que_graph import get_que_graph
+from app.orchestration.pipeline import complete
+from app.schemas.chat import ChatMessage, ChatRequest
+
+
+def test_make_thread_id_scopes_user_and_conversation():
+    assert make_thread_id("conv-1", "user-9") == "user-9:conv-1"
+    assert make_thread_id("conv-1", None) == "anon:conv-1"
+    assert make_thread_id(None, "user-9") is None
+    assert make_thread_id("  ", "user-9") is None
+
+
+def test_merge_seeds_then_appends_new_user_only():
+    seed = merge_dialog_with_incoming(
+        [],
+        [
+            ChatMessage(role="user", content="How do I publish?"),
+            ChatMessage(role="assistant", content="Open Links and publish."),
+        ],
+        max_turns=20,
+    )
+    assert len(seed) == 2
+    assert isinstance(seed[0], HumanMessage)
+
+    nxt = merge_dialog_with_incoming(
+        seed,
+        [
+            ChatMessage(role="user", content="How do I publish?"),
+            ChatMessage(role="assistant", content="Open Links and publish."),
+            ChatMessage(role="user", content="And where are results?"),
+        ],
+        max_turns=20,
+    )
+    assert len(nxt) == 3
+    assert nxt[-1].content == "And where are results?"
+
+
+def test_append_assistant_trims():
+    dialog = [HumanMessage(content=f"u{i}") for i in range(10)]
+    dialog = append_assistant(dialog, "answer", max_turns=4)
+    assert len(dialog) == 4
+    assert isinstance(dialog[-1], AIMessage)
+
+
+def test_prepare_uses_dialog_memory():
+    state = prepare_node(
+        {
+            "input_messages": [{"role": "user", "content": "Where are results?"}],
+            "dialog": [
+                HumanMessage(content="How do I publish?"),
+                AIMessage(content="Use Publish on the Links tab."),
+            ],
+            "messages": [],
+            "sources_used": [],
+        }
+    )
+    texts = [str(m.content) for m in state["messages"]]
+    assert any("QUE" in t for t in texts)
+    assert any("publish" in t.casefold() for t in texts)
+    assert any("results" in t.casefold() for t in texts)
+    assert "memory" in state["sources_used"]
+    assert state["memory_turns"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_complete_persists_dialog_across_turns():
+    get_que_graph.cache_clear()
+    fake_model = MagicMock()
+    fake_model.ainvoke = AsyncMock(
+        side_effect=[
+            AIMessage(content="Publish from the Links tab."),
+            AIMessage(content="Results are under the Results tab — related to publishing."),
+        ]
+    )
+    fake_model.model_name = "test-model"
+    cid = "mem-test-convo-1"
+
+    with patch("app.graphs.nodes.get_chat_model", return_value=fake_model):
+        first = await complete(
+            ChatRequest(
+                messages=[{"role": "user", "content": "How do I publish an exam?"}],
+                conversation_id=cid,
+                user_id="u1",
+            )
+        )
+        second = await complete(
+            ChatRequest(
+                messages=[
+                    {"role": "user", "content": "How do I publish an exam?"},
+                    {"role": "assistant", "content": first.message.content},
+                    {"role": "user", "content": "Where do I see results after that?"},
+                ],
+                conversation_id=cid,
+                user_id="u1",
+            )
+        )
+
+    assert "Publish" in first.message.content or "publish" in first.message.content.casefold()
+    assert second.message.content
+    assert fake_model.ainvoke.await_count == 2
+
+    # Second call's prompt should include prior dialog from checkpointer.
+    second_prompt = fake_model.ainvoke.await_args_list[1].args[0]
+    blob = " ".join(str(m.content) for m in second_prompt)
+    assert "publish" in blob.casefold()
+
+    config = runnable_config(make_thread_id(cid, "u1") or "")
+    snap = await get_que_graph().aget_state(config)
+    dialog = list((snap.values or {}).get("dialog") or [])
+    assert len(dialog) >= 3
+    get_que_graph.cache_clear()
