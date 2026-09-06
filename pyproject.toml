@@ -1,0 +1,67 @@
+[project]
+name = "que-agent"
+version = "0.1.0"
+description = "QUE — Quizzer's AI assistant service (Phase 1: conversational foundation)"
+readme = "README.md"
+requires-python = "==3.11.*"
+license = { text = "Proprietary" }
+authors = [{ name = "Quizzer" }]
+
+dependencies = [
+    # Core API (aligned with Quizzer production pins where practical)
+    "fastapi==0.139.2",
+    "uvicorn[standard]==0.40.0",
+    "starlette==1.3.1",
+    "gunicorn==23.0.0",
+    # Settings & validation
+    "pydantic==2.12.5",
+    "pydantic-settings==2.14.2",
+    "python-dotenv==1.2.2",
+    # HTTP / LLM (LangChain + LangGraph agent graph — aligned with Quizzer pins)
+    "httpx==0.28.1",
+    "langchain-core==1.3.3",
+    "langchain-openai==1.1.14",
+    "langgraph==1.0.10",
+    "langgraph-checkpoint==4.1.1",
+    # Observability
+    "structlog==25.5.0",
+    "PyJWT==2.10.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+    "pytest-asyncio>=0.26.0",
+    "ruff>=0.11.10",
+    "pip-audit>=2.9.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["app", "tests"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
