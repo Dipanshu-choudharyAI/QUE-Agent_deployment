@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+from tests.conftest import requires_knowledge
+
 from app.identity import build_system_prompt, identity_metadata
 from app.orchestration.history import sanitize_history
 from app.orchestration.pipeline import prepare_turn
@@ -38,6 +40,7 @@ def test_sanitize_strips_client_system_messages():
     assert cleaned[-1].content == "What can you do?"
 
 
+@requires_knowledge
 def test_prepare_turn_injects_identity_and_knowledge():
     request = ChatRequest(
         messages=[

@@ -7,6 +7,8 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from app.knowledge import knowledge_available
+
 # Configure env BEFORE importing the app / settings cache.
 os.environ.setdefault("APP_ENV", "local")
 os.environ.setdefault("QUE_SERVICE_KEY", "test-service-key-not-for-production")
@@ -17,6 +19,12 @@ os.environ.setdefault(
 os.environ.setdefault("ALLOW_INSECURE_LOCAL_NO_AUTH", "false")
 os.environ.setdefault("LLM_API_KEY", "")
 os.environ.setdefault("LLM_MODEL", "test-model")
+
+# knowledge/ is gitignored — pack-content tests need a local checkout.
+requires_knowledge = pytest.mark.skipif(
+    not knowledge_available(),
+    reason="knowledge/ packs not present (gitignored; local checkout required)",
+)
 
 
 @pytest.fixture(autouse=True)

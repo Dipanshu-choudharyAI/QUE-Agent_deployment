@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.conftest import requires_knowledge
+
 from app.knowledge.retrieve import select_knowledge
 from app.orchestration.pipeline import decide_turn
 from app.orchestration.resolve import resolve_request
@@ -96,6 +98,7 @@ def test_out_of_scope_still_refused():
     assert decision.early_reply and "Quizzer" in decision.early_reply
 
 
+@requires_knowledge
 def test_rag_uses_resolved_query_not_raw_follow_up():
     messages = _msgs(
         ("user", "Help me create an exam"),
@@ -271,10 +274,12 @@ def test_new_topic_bug_report_not_glued_to_prior():
     )
     assert decision.understanding.route == "knowledge"
     assert decision.early_reply is None
+    from app.knowledge import knowledge_available
     from app.knowledge.retrieve import select_knowledge
 
-    packs = select_knowledge(
-        [{"role": m.role, "content": m.content} for m in messages],
-        query=resolved.resolved_query,
-    )
-    assert "feedback" in packs.pack_ids
+    if knowledge_available():
+        packs = select_knowledge(
+            [{"role": m.role, "content": m.content} for m in messages],
+            query=resolved.resolved_query,
+        )
+        assert "feedback" in packs.pack_ids
