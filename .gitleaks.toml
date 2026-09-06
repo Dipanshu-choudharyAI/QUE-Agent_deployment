@@ -1,0 +1,5 @@
+# Gitleaks config — extend defaults; keep allowlist empty until false positives appear.
+title = "QUE-Agent gitleaks"
+
+[extend]
+useDefault = true
