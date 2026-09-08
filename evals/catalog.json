@@ -1,0 +1,15 @@
+{
+  "version": "1.0.0",
+  "description": "Phase 11 catalog — pointers to per-phase golden files. Do not merge into one mega-JSON.",
+  "categories": [
+    {"id": "scope", "path": "evals/scope_golden.json", "offline": true, "threshold": 0.90, "metric": "scope_and_route_accuracy"},
+    {"id": "retrieval", "path": "evals/retrieval_cases.json", "offline": true, "threshold": 0.70, "metric": "mean_recall_at_k", "mode": "keyword"},
+    {"id": "tools", "path": "evals/tool_cases.json", "offline": true, "threshold": 0.85, "metric": "selection_accuracy"},
+    {"id": "permissions", "path": "evals/permission_cases.json", "offline": true, "threshold": 1.0, "metric": "gate_accuracy"},
+    {"id": "agent", "path": "evals/agent_cases.json", "offline": true, "threshold": 0.85, "metric": "runtime_mode_accuracy"},
+    {"id": "injection", "path": "evals/injection_cases.json", "offline": true, "threshold": 1.0, "metric": "block_rate"},
+    {"id": "guardrail_fp", "path": "evals/scope_golden.json", "offline": true, "threshold": 1.0, "metric": "in_scope_clean_rate", "notes": "in_scope slice of scope_golden"},
+    {"id": "groundedness", "path": "evals/groundedness_cases.json", "offline": true, "threshold": 1.0, "metric": "heuristic_accuracy"},
+    {"id": "retrieval_dense", "path": "evals/retrieval_cases.json", "offline": false, "threshold": 0.80, "metric": "mean_recall_at_k", "mode": "dense"}
+  ]
+}

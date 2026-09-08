@@ -96,6 +96,20 @@ def merge_dialog_with_incoming(
     if not existing:
         return trim_dialog(incoming_lc, max_turns=max_turns)
 
+    # Client history can include canned/refuse turns the checkpointer never saw
+    # (those replies skip the graph). Append the suffix after the last overlap.
+    last_existing = existing[-1]
+    overlap_at: int | None = None
+    for i in range(len(incoming_lc) - 1, -1, -1):
+        if _same_text(incoming_lc[i], last_existing):
+            overlap_at = i
+            break
+    if overlap_at is not None:
+        extra = incoming_lc[overlap_at + 1 :]
+        if extra:
+            return trim_dialog([*existing, *extra], max_turns=max_turns)
+        return trim_dialog(existing, max_turns=max_turns)
+
     latest = incoming_lc[-1]
     if not isinstance(latest, HumanMessage):
         # Prefer the last user turn from the request.

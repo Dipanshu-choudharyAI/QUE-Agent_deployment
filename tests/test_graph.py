@@ -2,23 +2,29 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from app.core.llm import ChatLane
 from app.graphs import build_que_graph, get_que_graph
 from app.graphs.nodes import prepare_node
 from app.orchestration.pipeline import complete
 from app.schemas.chat import ChatRequest
 
+_TEST_LANE = ChatLane(model="test-model", key_index=0, api_key="test")
 
-def test_graph_topology_prepare_knowledge_generate():
+
+def test_graph_topology_prepare_context_tools_knowledge_generate():
     compiled = build_que_graph()
     graph = compiled.get_graph()
     node_ids = set(graph.nodes)
     assert "prepare" in node_ids
+    assert "context" in node_ids
+    assert "tools" in node_ids
     assert "knowledge" in node_ids
+    assert "agent" in node_ids
     assert "generate" in node_ids
 
 
@@ -45,11 +51,9 @@ def test_prepare_node_builds_langchain_messages():
 @pytest.mark.asyncio
 async def test_complete_runs_through_langgraph():
     get_que_graph.cache_clear()
-    fake_model = MagicMock()
-    fake_model.ainvoke = AsyncMock(return_value=AIMessage(content="Graph says hi"))
-    fake_model.model_name = "test-model"
+    fake_ainvoke = AsyncMock(return_value=(AIMessage(content="Graph says hi"), _TEST_LANE))
 
-    with patch("app.graphs.nodes.get_chat_model", return_value=fake_model):
+    with patch("app.graphs.nodes.ainvoke_chat", fake_ainvoke):
         response = await complete(
             ChatRequest(
                 messages=[{"role": "user", "content": "How do I publish an exam?"}],
@@ -59,24 +63,23 @@ async def test_complete_runs_through_langgraph():
 
     assert response.message.content == "Graph says hi"
     assert response.conversation_id == "c1"
-    fake_model.ainvoke.assert_awaited_once()
+    assert response.model == "test-model"
+    fake_ainvoke.assert_awaited_once()
     get_que_graph.cache_clear()
 
 
 @pytest.mark.asyncio
 async def test_complete_remembers_prior_turn_in_prompt():
     get_que_graph.cache_clear()
-    fake_model = MagicMock()
-    fake_model.ainvoke = AsyncMock(
+    fake_ainvoke = AsyncMock(
         side_effect=[
-            AIMessage(content="Publish from Links."),
-            AIMessage(content="Results follow from that publish."),
+            (AIMessage(content="Publish from Links."), _TEST_LANE),
+            (AIMessage(content="Results follow from that publish."), _TEST_LANE),
         ]
     )
-    fake_model.model_name = "test-model"
     cid = "graph-mem-1"
 
-    with patch("app.graphs.nodes.get_chat_model", return_value=fake_model):
+    with patch("app.graphs.nodes.ainvoke_chat", fake_ainvoke):
         await complete(
             ChatRequest(
                 messages=[{"role": "user", "content": "How do I publish?"}],
@@ -92,7 +95,7 @@ async def test_complete_remembers_prior_turn_in_prompt():
             )
         )
 
-    second_prompt = fake_model.ainvoke.await_args_list[1].args[0]
+    second_prompt = fake_ainvoke.await_args_list[1].args[0]
     blob = " ".join(str(m.content) for m in second_prompt)
     assert "publish" in blob.casefold()
     get_que_graph.cache_clear()

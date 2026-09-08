@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.core import llm as llm_client
+from app.core.config import get_settings
 from app.core.errors import ERROR_BAD_REQUEST, public_llm_error
+from app.core.ratelimit import check_rate_limit
 from app.core.security import require_chat_auth
 from app.core.tokens import QuePrincipal
 from app.identity import identity_metadata
@@ -18,6 +20,30 @@ from app.services import chat_service
 router = APIRouter(prefix="/v1", tags=["chat"])
 
 Principal = Annotated[QuePrincipal, Depends(require_chat_auth)]
+
+
+def _rate_limit_key(request: ChatRequest, principal: QuePrincipal, http_request: Request) -> str:
+    user_id = request.user_id or principal.user_id
+    if user_id:
+        return f"user:{user_id}"
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    return f"ip:{client_ip}"
+
+
+def _enforce_rate_limit(request: ChatRequest, principal: QuePrincipal, http_request: Request) -> None:
+    if principal.mode == "service":
+        return  # server-to-server callers (Quizzer ops) are not end users
+    key = _rate_limit_key(request, principal, http_request)
+    allowed, retry_after = check_rate_limit(key, settings=get_settings())
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "rate_limited",
+                "message": "Too many requests — please slow down a little and try again.",
+            },
+            headers={"Retry-After": str(max(1, int(retry_after)))},
+        )
 
 
 @router.get("/identity")
@@ -34,7 +60,8 @@ def _with_principal_user(request: ChatRequest, principal: QuePrincipal) -> ChatR
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, principal: Principal) -> ChatResponse:
+async def chat(request: ChatRequest, principal: Principal, http_request: Request) -> ChatResponse:
+    _enforce_rate_limit(request, principal, http_request)
     try:
         return await chat_service.chat_complete(_with_principal_user(request, principal))
     except ValueError as exc:
@@ -56,8 +83,9 @@ async def chat(request: ChatRequest, principal: Principal) -> ChatResponse:
 
 
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest, principal: Principal) -> StreamingResponse:
+async def chat_stream(request: ChatRequest, principal: Principal, http_request: Request) -> StreamingResponse:
     """SSE chat. Refuse / canned / tool-pending work without LLM_API_KEY."""
+    _enforce_rate_limit(request, principal, http_request)
     prepared = _with_principal_user(request, principal)
     return StreamingResponse(
         chat_service.chat_stream_events(prepared),

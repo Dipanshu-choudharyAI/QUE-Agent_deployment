@@ -22,7 +22,7 @@ Intent = Literal[
     "out_of_scope",
 ]
 Risk = Literal["read", "low_write", "high_write"]
-Freshness = Literal["static", "dynamic", "critical"]
+Freshness = Literal["static", "slow_changing", "dynamic", "critical"]
 DataNeed = Literal["none", "knowledge", "live_tool"]
 Complexity = Literal["single_step", "multi_step"]
 Route = Literal["refuse", "canned_eligible", "knowledge", "tool", "clarify"]
@@ -69,6 +69,30 @@ _OUT_OF_SCOPE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+# Workspace / nav surfaces — also used for small typos ("Dashbaord").
+_WORKSPACE_SURFACES: tuple[str, ...] = (
+    "dashboard",
+    "dashboards",
+    "home",
+    "exam",
+    "exams",
+    "quiz",
+    "quizzes",
+    "quizzer",
+    "student",
+    "students",
+    "analytics",
+    "arena",
+    "monitoring",
+    "results",
+    "settings",
+    "integrations",
+    "classroom",
+    "calendar",
+    "account",
+    "onboarding",
+)
+
 _QUIZZER_HINTS: tuple[str, ...] = (
     "quiz",
     "quizzer",
@@ -86,6 +110,9 @@ _QUIZZER_HINTS: tuple[str, ...] = (
     "score",
     "grade",
     "dashboard",
+    "metric",
+    "kpi",
+    "home",
     "share link",
     "verification",
     "enrollment",
@@ -112,13 +139,23 @@ _QUIZZER_HINTS: tuple[str, ...] = (
 _LIVE_DATA_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.I)
     for p in (
-        r"\bhow many\b.*\b(student|attempt|fail|pass|score)",
-        r"\b(my|our)\s+(score|result|grade|analytics)\b",
+        r"\bhow many\b.*\b(students?|attempts?|fails?|pass(es|ed)?|scores?|exams?|quizzes)\b",
+        r"\b(my|our)\s+(score|result|grade|analytics|exams?|quizzes)\b",
         r"\bwho\s+(failed|passed|scored)\b",
-        r"\bcount\b.*\b(student|attempt)",
+        r"\bcount\b.*\b(students?|attempts?|exams?|quizzes)\b",
+        r"\b(exams?|quizzes)\s+(have i|did i|i (made|created|have)|made by me|created by me)\b",
+        r"\bhow many\b.*\b(made|created)\b",
         r"\bbelow\s+\d+\b",
         r"\btoday'?s?\s+(exam|results?)\b",
         r"\blive\s+(count|students?|attempts?)\b",
+        r"\b(my|the)\s+(dashboard\s+)?(metrics?|kpis?)\b",
+        r"\bmetrics?\b.*\b(dashboard|exam|quiz|numbers?)\b",
+        r"\bdashboard\b.*\b(metrics?|numbers?|stats?|kpis?)\b",
+        r"\b(can you|do you|could you)\s+see\b.*\b(exam|quiz)\b",
+        r"\b(see|look at|find|show me|open|check)\s+(my|this|that|the)\s+(one\s+)?(exam|quiz)\b",
+        r"\bin\s+my\s+(one\s+)?(exam|quiz)\b",
+        r"\b(exam|quiz)\s+(titled|called|named)\b",
+        r"\bcan you see (that|this|it)\b",
     )
 )
 
@@ -131,12 +168,14 @@ _ANALYTICS_HINTS: tuple[str, ...] = (
     "fail rate",
     "compare exam",
     "topic performance",
+    "metric",
+    "kpi",
 )
 
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.I)
     for p in (
-        r"\b(create|delete|publish|unpublish|approve|reject|share)\b",
+        r"\b(create|delete|publish|unpublish|approve|reject|share|notify|remind)\b",
         r"\b(start|stop|end)\s+(the\s+)?(exam|quiz|attempt)\b",
         r"\bchange\b.*\b(setting|timer|password)\b",
     )
@@ -161,6 +200,42 @@ _META_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     )
 )
 
+_MULTI_STEP_RE = re.compile(
+    r"\b(compare|versus|vs\.?|then tell me|and then|as well as)\b",
+    re.I,
+)
+_MULTI_LIVE_BITS: tuple[str, ...] = (
+    "how many",
+    "how did",
+    "results",
+    "who needs",
+    "publish",
+    "dashboard",
+    "analytics",
+    "live exam",
+    "status",
+    "count",
+    "blueprint",
+    "follow up",
+)
+
+
+def is_multi_step_ask(text: str) -> bool:
+    """True when the ask likely needs more than one tool or a chained how-to."""
+    n = _norm(text or "")
+    if not n:
+        return False
+    if _MULTI_STEP_RE.search(n):
+        return True
+    if " and " in n:
+        live_hits = sum(1 for bit in _MULTI_LIVE_BITS if bit in n)
+        if live_hits >= 2:
+            return True
+        if "how" in n and any(h in n for h in ("exam", "quiz", "result", "student", "dashboard")):
+            return True
+    return False
+
+
 _HIGH_WRITE_HINTS: tuple[str, ...] = (
     "delete",
     "remove all",
@@ -171,14 +246,69 @@ _HIGH_WRITE_HINTS: tuple[str, ...] = (
 )
 
 
+def _canonicalize_product_text(text: str) -> str:
+    """Map workspace-page typos onto canonical names (dashbaord → dashboard)."""
+
+    def _repl(match: re.Match[str]) -> str:
+        tok = match.group(0)
+        if tok in _WORKSPACE_SURFACES:
+            return tok
+        if len(tok) < 6:
+            return tok
+        for surface in _WORKSPACE_SURFACES:
+            if abs(len(tok) - len(surface)) > 2:
+                continue
+            allowed = 1 if min(len(tok), len(surface)) <= 7 else 2
+            if _edit_distance(tok, surface) <= allowed:
+                return surface
+        return tok
+
+    return re.sub(r"[a-z0-9']+", _repl, text)
+
+
 def _norm(text: str) -> str:
     cleaned = text.casefold().strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
-    return cleaned
+    return _canonicalize_product_text(cleaned)
+
+
+def _edit_distance(a: str, b: str) -> int:
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, start=1):
+        cur = [i]
+        for j, cb in enumerate(b, start=1):
+            cur.append(min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _token_is_workspace_surface(token: str) -> bool:
+    """True if a word is a Quizzer page name, including common typos."""
+    if token in _WORKSPACE_SURFACES:
+        return True
+    if len(token) < 6:
+        return False
+    for surface in _WORKSPACE_SURFACES:
+        if abs(len(token) - len(surface)) > 2:
+            continue
+        allowed = 1 if min(len(token), len(surface)) <= 7 else 2
+        if _edit_distance(token, surface) <= allowed:
+            return True
+    return False
 
 
 def _has_quizzer_hint(text: str) -> bool:
-    return any(h in text for h in _QUIZZER_HINTS)
+    """Product signal: exact hints or a workspace-page token (with typo slack)."""
+    n = _norm(text or "")
+    if any(h in n for h in _QUIZZER_HINTS):
+        return True
+    return any(_token_is_workspace_surface(tok) for tok in re.findall(r"[a-z0-9']+", n))
 
 
 def is_hard_out_of_scope(text: str) -> bool:
@@ -264,7 +394,7 @@ def classify_request(
                 risk="read",
                 freshness="critical" if "live" in n or "today" in n else "dynamic",
                 data_need="live_tool",
-                complexity="single_step",
+                complexity="multi_step" if is_multi_step_ask(n) else "single_step",
                 route="tool",
                 reasons=tuple(reasons),
             )
@@ -277,7 +407,7 @@ def classify_request(
             risk="read",
             freshness="dynamic",
             data_need="live_tool",
-            complexity="multi_step" if "compare" in n else "single_step",
+            complexity="multi_step" if is_multi_step_ask(n) else "single_step",
             route="tool",
             reasons=tuple(reasons),
         )
@@ -341,7 +471,7 @@ def classify_request(
             risk="read",
             freshness="static",
             data_need="knowledge",
-            complexity="multi_step" if " and " in n and "how" in n else "single_step",
+            complexity="multi_step" if is_multi_step_ask(n) else "single_step",
             route="knowledge",
             reasons=tuple(reasons),
         )

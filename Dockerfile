@@ -34,12 +34,21 @@ COPY --from=deps /app/.venv /app/.venv
 COPY app ./app
 COPY knowledge ./knowledge
 COPY scripts/start.sh ./scripts/start.sh
-RUN chmod +x scripts/start.sh \
+# Chroma index is built automatically on container start by scripts/start.sh
+# (needs LLM_API_KEY for embeddings) — incremental, so cheap on restarts.
+# Mount a persistent volume at /app/data/chroma so it survives redeploys
+# instead of re-embedding from scratch every time.
+ENV QUE_CHROMA_PATH=/app/data/chroma
+RUN mkdir -p /app/data/chroma \
+    && chmod +x scripts/start.sh \
     && chown -R que:que /app
 
 USER que
 EXPOSE 8100
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -fsS "http://127.0.0.1:${PORT}/health" || exit 1
+# /ready checks real dependencies (LLM key, knowledge index, Quizzer tools
+# reachability) — /health stays pure liveness for callers that just want to
+# know the process is up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD curl -fsS "http://127.0.0.1:${PORT}/ready" || exit 1
 
 CMD ["./scripts/start.sh"]

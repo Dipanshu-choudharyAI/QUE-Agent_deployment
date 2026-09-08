@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.core.llm import ChatLane
 from app.graphs.memory import (
     append_assistant,
     make_thread_id,
@@ -51,6 +52,36 @@ def test_merge_seeds_then_appends_new_user_only():
     assert nxt[-1].content == "And where are results?"
 
 
+def test_merge_keeps_canned_turns_missing_from_checkpoint():
+    """Refuse/canned replies skip the graph, so client history must fill the gap."""
+    existing = merge_dialog_with_incoming(
+        [],
+        [
+            ChatMessage(role="user", content="Did you see my exam AI vs ML"),
+            ChatMessage(role="assistant", content="Yes, it is published."),
+        ],
+        max_turns=20,
+    )
+    merged = merge_dialog_with_incoming(
+        existing,
+        [
+            ChatMessage(role="user", content="Did you see my exam AI vs ML"),
+            ChatMessage(role="assistant", content="Yes, it is published."),
+            ChatMessage(role="user", content="How to enhance the experience on this website"),
+            ChatMessage(
+                role="assistant",
+                content="I only help with Quizzer — creating quizzes, exams, monitoring, and results.",
+            ),
+            ChatMessage(role="user", content="what is my first query?"),
+        ],
+        max_turns=20,
+    )
+    texts = [str(m.content) for m in merged]
+    assert "How to enhance the experience on this website" in texts
+    assert any("only help with Quizzer" in t for t in texts)
+    assert texts[-1] == "what is my first query?"
+
+
 def test_append_assistant_trims():
     dialog = [HumanMessage(content=f"u{i}") for i in range(10)]
     dialog = append_assistant(dialog, "answer", max_turns=4)
@@ -81,17 +112,16 @@ def test_prepare_uses_dialog_memory():
 @pytest.mark.asyncio
 async def test_complete_persists_dialog_across_turns():
     get_que_graph.cache_clear()
-    fake_model = MagicMock()
-    fake_model.ainvoke = AsyncMock(
+    lane = ChatLane(model="test-model", key_index=0, api_key="test")
+    fake_ainvoke = AsyncMock(
         side_effect=[
-            AIMessage(content="Publish from the Links tab."),
-            AIMessage(content="Results are under the Results tab — related to publishing."),
+            (AIMessage(content="Publish from the Links tab."), lane),
+            (AIMessage(content="Results are under the Results tab — related to publishing."), lane),
         ]
     )
-    fake_model.model_name = "test-model"
     cid = "mem-test-convo-1"
 
-    with patch("app.graphs.nodes.get_chat_model", return_value=fake_model):
+    with patch("app.graphs.nodes.ainvoke_chat", fake_ainvoke):
         first = await complete(
             ChatRequest(
                 messages=[{"role": "user", "content": "How do I publish an exam?"}],
@@ -113,10 +143,10 @@ async def test_complete_persists_dialog_across_turns():
 
     assert "Publish" in first.message.content or "publish" in first.message.content.casefold()
     assert second.message.content
-    assert fake_model.ainvoke.await_count == 2
+    assert fake_ainvoke.await_count == 2
 
     # Second call's prompt should include prior dialog from checkpointer.
-    second_prompt = fake_model.ainvoke.await_args_list[1].args[0]
+    second_prompt = fake_ainvoke.await_args_list[1].args[0]
     blob = " ".join(str(m.content) for m in second_prompt)
     assert "publish" in blob.casefold()
 

@@ -26,6 +26,8 @@ dependencies = [
     # Observability
     "structlog==25.5.0",
     "PyJWT==2.13.0",
+    "chromadb>=1.1,<2",
+    "rank-bm25>=0.2.2",
 ]
 
 [dependency-groups]

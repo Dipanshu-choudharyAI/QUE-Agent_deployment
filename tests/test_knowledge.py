@@ -99,7 +99,7 @@ def test_fallback_when_no_keywords():
 def test_graph_has_knowledge_node():
     get_que_graph.cache_clear()
     node_ids = set(build_que_graph().get_graph().nodes)
-    assert {"prepare", "knowledge", "generate"} <= node_ids
+    assert {"prepare", "knowledge", "generate", "context", "tools"} <= node_ids
     get_que_graph.cache_clear()
 
 

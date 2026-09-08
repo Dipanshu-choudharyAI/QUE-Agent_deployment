@@ -21,10 +21,11 @@ def test_identity_mentions_que_and_limits():
     assert "Product knowledge" in prompt
     meta = identity_metadata()
     assert meta["name"] == "QUE"
-    assert meta["phase"] == "2-knowledge"
-    assert meta["identity_version"] == "1.7.0"
+    assert meta["phase"] == "14-write-tools"
+    assert meta["identity_version"] == "1.20.0"
     assert "Greetings and small talk are fine" in prompt
     assert "**" in prompt or "double asterisks" in prompt
+    assert "underlined" in prompt.casefold()
     assert "never paste" in prompt.casefold() or "Never paste" in prompt or "never paste" in prompt
 
 

@@ -1,7 +1,7 @@
 {
   "version": "3.0.0",
   "phase": "complete",
-  "description": "Answer-oriented QUE knowledge. CORE always injected; guides matched by keywords. No embeddings.",
+  "description": "Answer-oriented QUE knowledge. CORE always injected; dense RAG when indexed, else keyword guides.",
   "always": ["core"],
   "max_guides": 3,
   "documents": [
@@ -264,7 +264,8 @@
         "dashboard", "home", "landing page", "overview", "main page",
         "live exams panel", "quick actions", "activation checklist",
         "student dashboard", "teacher dashboard", "getting started",
-        "dashboard empty", "what is on dashboard"
+        "dashboard empty", "what is on dashboard",
+        "dashboard metrics", "kpi", "active right now"
       ]
     },
     {

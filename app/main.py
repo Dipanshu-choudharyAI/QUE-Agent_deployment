@@ -8,7 +8,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, health
+from app.api import chat, health, ops
 from app.core.config import get_settings
 
 logger = structlog.get_logger(__name__)
@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
 
     application.include_router(health.router)
     application.include_router(chat.router)
+    application.include_router(ops.router)
     return application
 
 

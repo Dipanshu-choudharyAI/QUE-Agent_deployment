@@ -1,4 +1,7 @@
-"""Product knowledge package — markdown packs under /knowledge, selected at runtime."""
+"""Product knowledge package — markdown packs under /knowledge, selected at runtime.
+
+Phase 2 adds dense RAG (chunk → embed → Chroma) while keeping keyword fallback.
+"""
 
 from app.knowledge.retrieve import (
     KnowledgeSelection,

@@ -51,6 +51,7 @@ class ResolvedRequest(BaseModel):
     response_mode: ResponseMode = "normal"
     prior_user_message: str | None = None
     prior_assistant_summary: str | None = None
+    thread_active: bool = False
     reasons: tuple[str, ...] = ()
 
     def as_log_dict(self) -> dict[str, Any]:
@@ -75,7 +76,9 @@ _FOLLOW_UP_EXACT: tuple[re.Pattern[str], ...] = tuple(
         r"^(shorter|longer|again|rephrase|reword|rewrite)([.!?]|\s|$)",
         r"^(what about|how about|and what about)\b",
         r"^(what if|and if)\b",
-        r"^(why|how|can i|is it possible)([.!?]|\s|$)",
+        # Bare "why?" / "how?" only — not "how many exams…" / "how do I publish"
+        r"^(why|how)\s*\??$",
+        r"^(can i|is it possible)\s*\??$",
         r"^(and|also|then)\b.{0,80}$",
         r"^(continue|go on|next|more)([.!?]|\s|$)",
         r"^(same for|now for|now about|now tell me about)\b",
@@ -86,6 +89,12 @@ _FOLLOW_UP_EXACT: tuple[re.Pattern[str], ...] = tuple(
         r"^#?\d{1,2}([.!?]|\s|$)",
         r"^(explain\s+)?(them\s+)?(one by one|each one|one at a time|separately)([.!?]|\s|$)",
         r"^(go through|walk through)\s+(them|each|each one)([.!?]|\s|$)",
+        r"\bwhich (exam|quiz|one)\b",
+        r"\bwhat (was|is) my (first|last|original|starting|previous) (query|question|message|ask)\b",
+        r"\b(starting message|first (query|question|message))\b",
+        r"\bwhat did i (just )?(ask|say|type)\b",
+        r"\bwhat were we talking about\b",
+        r"\bi('m| am) talking about\b",
     )
 )
 
@@ -166,6 +175,11 @@ def _looks_like_follow_up(
         return False
     # Greetings / thanks are their own turns (canned), not product follow-ups.
     if re.match(r"^(hi|hello|hey|yo|thanks|thank you|thx)\b", n):
+        return False
+    if _is_conversation_meta(text) and thread_active:
+        return True
+    # Fresh product / live-data asks are standalone even mid-thread.
+    if _looks_like_new_topic_ask(text):
         return False
     if len(n) > 160 and not _YES_PREFIX.match(n):
         return False
@@ -279,6 +293,7 @@ def _anchor_phrase(prior: str) -> str:
     text = text.rstrip("?.! ").strip()
     # Common typos / shorthand → product terms for retrieval + scope.
     text = re.sub(r"\bcalender\b", "calendar", text, flags=re.I)
+    text = re.sub(r"\bdashbaord\b", "dashboard", text, flags=re.I)
     text = re.sub(r"\bexplain\s+", "", text, count=1, flags=re.I).strip() or text
     if not text:
         return (prior or "").strip()
@@ -321,6 +336,8 @@ def _infer_topic(anchor: str) -> str | None:
         return "exam_settings"
     if "arena" in n:
         return "arena"
+    if "dashboard" in n or "metric" in n or "kpi" in n:
+        return "dashboard"
     if "integrat" in n or "classroom" in n or "drive" in n or "calendar" in n or "calender" in n:
         return "integrations"
     if "exam" in n:
@@ -332,18 +349,42 @@ def _infer_topic(anchor: str) -> str | None:
 
 _NEW_TOPIC_ASK = re.compile(
     r"\b("
-    r"how (do|to|can) i\b|how does\b|where (is|do|can)\b|what is\b|"
+    r"how (do|to|can|many) i?\b|how does\b|where (is|do|can)\b|what is (a|an|the)\b|"
+    r"how many\b|count (my|the)?\b|"
     r"report (a )?bug|send feedback|contact support|feature request|"
     r"explain\b|help me\b"
+    r")",
+    re.I,
+)
+
+_CONVO_META_RE = re.compile(
+    r"\b("
+    r"what (was|is) my (first|last|original|starting|previous) (query|question|message|ask)|"
+    r"what did i (just )?(ask|say|type)|"
+    r"starting message|first (query|question|message)|"
+    r"which (exam|quiz|one)|"
+    r"what were we talking about|"
+    r"i('m| am) talking about"
     r")\b",
     re.I,
 )
+
+
+def is_conversation_meta(text: str) -> bool:
+    """True when the user is asking about this chat, not a new product topic."""
+    return bool(_CONVO_META_RE.search(_norm(text)))
+
+
+def _is_conversation_meta(text: str) -> bool:
+    return is_conversation_meta(text)
 
 
 def _looks_like_new_topic_ask(text: str) -> bool:
     """True when the user starts a fresh product ask mid-thread (not style/ordinal)."""
     n = _norm(text)
     if len(n) < 10 or len(n) > 160:
+        return False
+    if _is_conversation_meta(text):
         return False
     if _is_style_or_ordinal_only(text):
         return False
@@ -517,6 +558,11 @@ def resolve_request(
             resolved = raw.strip()
             topic = _infer_topic(raw) or _infer_topic(resolved) or prior_topic
             reasons.append("new_topic_override")
+        elif _is_conversation_meta(raw):
+            # Keep the chat-history question intact — do not rewrite it into a how-to.
+            resolved = raw.strip()
+            topic = _infer_topic(anchor or "") or prior_topic
+            reasons.append("conversation_meta")
         else:
             resolved = _compose_resolved(
                 raw,
@@ -540,6 +586,7 @@ def resolve_request(
             response_mode=mode,
             prior_user_message=anchor or immediate_prior,
             prior_assistant_summary=assistant_snip,
+            thread_active=thread_active,
             reasons=tuple(reasons),
         )
 
@@ -558,6 +605,7 @@ def resolve_request(
         response_mode=mode,
         prior_user_message=immediate_prior,
         prior_assistant_summary=assistant_snip,
+        thread_active=thread_active,
         reasons=tuple(reasons),
     )
 
@@ -582,6 +630,12 @@ def build_turn_instruction(resolution: ResolvedRequest) -> str:
             )
     if resolution.topic:
         lines.append(f"- Topic: {resolution.topic}")
+    if _is_conversation_meta(resolution.raw_message):
+        lines.append(
+            "- The user is asking about THIS chat (first question, which exam, what we were "
+            "talking about). Answer from the messages above. Do not refuse and do not say "
+            "you only help with Quizzer."
+        )
 
     mode = resolution.response_mode
     if mode == "step_by_step":

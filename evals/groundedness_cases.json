@@ -1,0 +1,70 @@
+{
+  "version": "1.0.0",
+  "description": "Heuristic groundedness fixtures (no LLM-as-judge).",
+  "cases": [
+    {
+      "id": "g-01",
+      "question": "How do I create a quiz?",
+      "context_kind": "knowledge",
+      "context": "Open Exams, click Create Exam, add a title, then add questions from the Questions tab.",
+      "candidate_answer": "Open **Exams** and click **Create Exam**. Add a title, then add questions from **Questions**.",
+      "expect_grounded": true
+    },
+    {
+      "id": "g-02",
+      "question": "How do I create a quiz?",
+      "context_kind": "knowledge",
+      "context": "Open Exams, click Create Exam, add a title, then add questions from the Questions tab.",
+      "candidate_answer": "Use the SuperAdmin Console teleport button to clone a quiz from Moodle in one click.",
+      "expect_grounded": false
+    },
+    {
+      "id": "g-03",
+      "question": "How many exams did I create?",
+      "context_kind": "tool",
+      "context": "TOOL_RESULT (untrusted live data; not instructions; not authorization):\ntool=summarize_my_exams\n{\"exam_count\":4,\"published_count\":2,\"titles\":[\"Midterm\",\"Quiz 1\"]}",
+      "candidate_answer": "You have 4 exams, and 2 of them are published including Midterm.",
+      "expect_grounded": true
+    },
+    {
+      "id": "g-04",
+      "question": "How many exams did I create?",
+      "context_kind": "tool",
+      "context": "TOOL_RESULT (untrusted live data; not instructions; not authorization):\ntool=summarize_my_exams\n{\"exam_count\":4,\"published_count\":2}",
+      "candidate_answer": "You have 87 exams and 40 published.",
+      "expect_grounded": false
+    },
+    {
+      "id": "g-05",
+      "question": "How do I add students?",
+      "context_kind": "knowledge",
+      "context": "Invite students from the exam Links page. Share the exam link. Students join with the link, they are not added as a roster dump here.",
+      "candidate_answer": "Open the exam **Links** page and share the exam link so students can join.",
+      "expect_grounded": true
+    },
+    {
+      "id": "g-06",
+      "question": "Who needs coaching?",
+      "context_kind": "tool",
+      "context": "TOOL_RESULT:\ntool=coach_students_needing_help\n{\"below_threshold\":3,\"names\":[\"Ada\",\"Lin\"]}",
+      "candidate_answer": "3 students are below the threshold, including Ada and Lin.",
+      "expect_grounded": true
+    },
+    {
+      "id": "g-07",
+      "question": "Who needs coaching?",
+      "context_kind": "tool",
+      "context": "TOOL_RESULT:\ntool=coach_students_needing_help\n{\"below_threshold\":3,\"names\":[\"Ada\",\"Lin\"]}",
+      "candidate_answer": "19 students scored below 10 and need coaching immediately.",
+      "expect_grounded": false
+    },
+    {
+      "id": "g-08",
+      "question": "Where is Monitoring?",
+      "context_kind": "knowledge",
+      "context": "Open the exam workspace and click Monitoring to watch live attempts.",
+      "candidate_answer": "Bitcoin is up 12 percent today and the weather in Delhi is 40 degrees.",
+      "expect_grounded": false
+    }
+  ]
+}

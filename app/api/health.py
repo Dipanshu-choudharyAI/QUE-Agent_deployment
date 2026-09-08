@@ -1,6 +1,17 @@
-"""Health and readiness endpoints."""
+"""Health and readiness endpoints.
 
-from fastapi import APIRouter
+``/health`` is pure liveness (process is up) — always cheap, always 200 once
+the process is running. ``/ready`` actually checks the dependencies a real
+request needs, so a load balancer can stop routing to a broken instance
+(missing LLM key, empty knowledge index, unreachable Quizzer tools) instead
+of serving degraded chat.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import APIRouter, Response, status
 
 from app.core.config import get_settings
 
@@ -16,3 +27,41 @@ async def health() -> dict[str, str]:
         "version": settings.app_version,
         "env": settings.app_env,
     }
+
+
+def _chroma_ready(chroma_path: str) -> bool:
+    path = Path(chroma_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[2] / path
+    if not path.is_dir():
+        return False
+    # A real Chroma persist dir has at least one sqlite/parquet artifact.
+    return any(path.iterdir()) if path.exists() else False
+
+
+@router.get("/ready")
+async def ready(response: Response) -> dict[str, object]:
+    settings = get_settings()
+    checks: dict[str, bool] = {}
+
+    checks["llm_configured"] = bool(settings.llm_api_keys)
+
+    if settings.que_rag_enabled:
+        checks["knowledge_index"] = _chroma_ready(settings.que_chroma_path)
+    else:
+        checks["knowledge_index"] = True  # not required when RAG is off
+
+    from app.knowledge import validate_knowledge_manifest
+
+    checks["knowledge_manifest"] = not validate_knowledge_manifest()
+
+    if settings.que_tools_enabled:
+        from app.tools.quizzer_client import check_tools_health
+
+        checks["quizzer_tools"] = await check_tools_health(settings=settings)
+    else:
+        checks["quizzer_tools"] = True  # not required when tools are off
+
+    ok = all(checks.values())
+    response.status_code = status.HTTP_200_OK if ok else status.HTTP_503_SERVICE_UNAVAILABLE
+    return {"status": "ok" if ok else "degraded", "checks": checks}

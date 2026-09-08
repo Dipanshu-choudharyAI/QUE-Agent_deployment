@@ -123,6 +123,59 @@ header.topbar .brandmini .dot{width:8px;height:8px;border-radius:50%;background:
 .status-inprogress{color:var(--warning);}
 .status-complete{color:var(--success);}
 
+.navlink.current-phase{border-left-color:var(--warning);}
+.navlink .here-badge{
+  font-family:var(--mono);font-size:9px;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--warning);border:1px solid var(--warning);border-radius:4px;padding:0 4px;margin-left:4px;
+}
+
+.you-are-here{
+  display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px;
+  border:1px solid var(--border-strong);border-radius:var(--radius);
+  background:linear-gradient(135deg,var(--accent-soft),var(--surface));
+  padding:14px 16px;margin:0 0 22px;
+}
+.you-are-here .yah-k{font-family:var(--mono);font-size:10.5px;color:var(--accent-strong);letter-spacing:.05em;text-transform:uppercase;}
+.you-are-here .yah-title{font-size:16px;font-weight:600;margin:2px 0;}
+.you-are-here .yah-sub{font-size:13px;color:var(--text-dim);margin:0;}
+.you-are-here .yah-actions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;}
+
+.journey-board{
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:18px 0 22px;
+}
+@media (max-width:900px){.journey-board{grid-template-columns:1fr 1fr;}}
+@media (max-width:520px){.journey-board{grid-template-columns:1fr;}}
+.journey-col{
+  border:1px solid var(--border);border-radius:var(--radius);background:var(--surface);padding:10px 12px;min-height:120px;
+}
+.journey-col h4{
+  font-family:var(--mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--text-faint);margin:0 0 10px;font-weight:600;
+}
+.journey-col[data-col="done"] h4{color:var(--success);}
+.journey-col[data-col="now"] h4{color:var(--warning);}
+.journey-col[data-col="next"] h4{color:var(--accent);}
+.journey-card{
+  display:block;width:100%;text-align:left;cursor:pointer;
+  border:1px solid var(--border);border-radius:8px;background:var(--surface-sunken);
+  padding:8px 10px;margin:0 0 8px;color:var(--text);font-size:12.5px;
+}
+.journey-card:hover{border-color:var(--border-strong);}
+.journey-card .jc-num{font-family:var(--mono);font-size:10px;color:var(--text-faint);margin-right:6px;}
+.journey-card .jc-pct{font-family:var(--mono);font-size:10px;color:var(--text-faint);float:right;}
+.journey-empty{font-size:12px;color:var(--text-faint);font-style:italic;}
+
+.phase[data-current="true"]{
+  outline:2px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  outline-offset:4px;border-radius:var(--radius);
+}
+.pin-current-btn{
+  font-family:var(--mono);font-size:10.5px;padding:4px 8px;border-radius:6px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--text-dim);
+}
+.pin-current-btn.active{border-color:var(--warning);color:var(--warning);background:transparent;}
+.pin-current-btn:hover{border-color:var(--border-strong);color:var(--text);}
+
 .main{flex:1;min-width:0;}
 .container{max-width:840px;margin:0 auto;padding:36px 40px 100px;}
 
@@ -201,6 +254,7 @@ footer{border-top:1px solid var(--border);padding:32px;text-align:center;color:v
 .status-chip{font-family:var(--mono);font-size:10px;letter-spacing:.04em;padding:3px 9px;border-radius:20px;border:1px solid;white-space:nowrap;}
 .status-chip.build{background:var(--accent-soft);color:var(--accent-strong);border-color:var(--accent);}
 .status-chip.learn{background:var(--warning-soft);color:var(--warning);border-color:var(--warning);}
+.status-chip.done{background:var(--ok-soft, #e8f5e9);color:var(--ok, #2e7d32);border-color:var(--ok, #2e7d32);}
 .status-chip.later{background:var(--surface);color:var(--text-dim);border-color:var(--border-strong);}
 .phase-head h3{font-size:21px;margin:12px 0 5px;}
 .phase-head .phase-goal{font-size:13.5px;color:var(--text-dim);margin:0;}
@@ -317,6 +371,7 @@ mark{background:var(--warning-soft);color:var(--text);padding:0 1px;}
   <div class="hdr-spacer"></div>
   <button class="hdr-btn" id="searchBtn" aria-label="Search handbook">Search <span class="hdr-kbd">⌘K</span></button>
   <button class="hdr-btn" id="themeBtn" aria-label="Toggle theme">Theme</button>
+  <button class="hdr-btn" id="baselineBtn" aria-label="Apply repo baseline marks">Mark baseline</button>
   <button class="hdr-btn" id="resetBtn" aria-label="Reset progress">Reset</button>
 </header>
 
@@ -328,7 +383,7 @@ mark{background:var(--warning-soft);color:var(--text);padding:0 1px;}
       <div class="navlinks" id="g0">
         <a class="navlink" data-target="overview"><span class="num"></span><span>Overview</span></a>
         <a class="navlink" data-target="architecture"><span class="num"></span><span>Architecture</span></a>
-        <a class="navlink" data-target="roadmap"><span class="num"></span><span>Roadmap</span></a>
+        <a class="navlink" data-target="roadmap"><span class="num"></span><span>Progress tracker</span></a>
       </div>
     </div>
 
@@ -447,7 +502,29 @@ Cross-cutting: Observability · Cost Governance · Evaluation · Reliability</pr
 
       <section class="block" id="roadmap">
         <div class="eyebrow">Orientation</div>
-        <h2 class="block-title">System Map</h2>
+        <h2 class="block-title">Progress tracker</h2>
+        <p class="block-sub">Where we are, what we already shipped, and what comes next. Checkboxes persist in this browser; use <strong>Mark baseline</strong> to sync with the repo.</p>
+
+        <div class="you-are-here" id="youAreHere">
+          <div>
+            <div class="yah-k">You are here</div>
+            <div class="yah-title" id="yahTitle">Phase 14 — Async Workflows</div>
+            <p class="yah-sub" id="yahSub">Observability, cost budgets, and the reliability matrix shipped. Next: job-queue work for long-running asks.</p>
+          </div>
+          <div class="yah-actions">
+            <button type="button" class="hdr-btn" id="yahJump">Jump to current phase</button>
+          </div>
+        </div>
+
+        <div class="journey-board" id="journeyBoard" aria-label="Done Now Next Later">
+          <div class="journey-col" data-col="done"><h4>Done</h4><div class="journey-list" id="journeyDone"></div></div>
+          <div class="journey-col" data-col="now"><h4>Now</h4><div class="journey-list" id="journeyNow"></div></div>
+          <div class="journey-col" data-col="next"><h4>Next</h4><div class="journey-list" id="journeyNext"></div></div>
+          <div class="journey-col" data-col="later"><h4>Later</h4><div class="journey-list" id="journeyLater"></div></div>
+        </div>
+
+        <div class="eyebrow" style="margin-top:8px;">System map</div>
+        <h2 class="block-title" style="font-size:20px;">All phases</h2>
         <p class="block-sub">Nineteen phases, each unlocked by evidence from the one before it. Click a stage to jump there.</p>
 
         <div class="diagram" style="font-family:var(--mono);">
@@ -754,6 +831,9 @@ Question → Embed → Top-K Search → Context Assembly → LLM → Grounded An
 
             <div class="sub"><h4>Implementation Tasks</h4>
               <div class="checklist tasks" data-phase="phase2">
+                <label><input type="checkbox" class="task" data-id="p2-pre1"><span>[Shipped] Product knowledge/ packs + manifest.json in repo and Docker image</span></label>
+                <label><input type="checkbox" class="task" data-id="p2-pre2"><span>[Shipped] Keyword select_knowledge wired into LangGraph knowledge node</span></label>
+                <label><input type="checkbox" class="task" data-id="p2-pre3"><span>[Shipped] Frontmatter strip, size caps, fallback guide, startup manifest validation</span></label>
                 <label><input type="checkbox" class="task" data-id="p2-t1"><span>Ingestion pipeline runs end-to-end on real Quizzer docs</span></label>
                 <label><input type="checkbox" class="task" data-id="p2-t2"><span>Chunking strategy documented with a stated rationale</span></label>
                 <label><input type="checkbox" class="task" data-id="p2-t3"><span>Each chunk carries source, version, and freshness metadata</span></label>
@@ -893,7 +973,7 @@ Question → Embed → Top-K Search → Context Assembly → LLM → Grounded An
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
+                <div class="status"><span class="status-chip done">SHIPPED</span></div>
                 <h3>Phase 4 — Tools + Secure Tool Execution + Workflows</h3>
                 <p class="phase-goal">Give the model a fixed set of controlled actions — and decide, per feature, whether it even needs to be the model choosing at all.</p>
               </div>
@@ -945,14 +1025,11 @@ CRITICAL ACTION   → explicit confirmation + audit log</pre></div>
             </div>
 
             <div class="sub"><h4>Architecture</h4>
-              <div class="diagram"><pre>get_my_results()
-get_exam_statistics(exam_id)
-count_students_below_score(exam_id, threshold)
-compare_exam_results(exam_id_a, exam_id_b)
+              <div class="diagram"><pre>explain_exam_status / summarize_exam_results / diagnose_publish_blockers
+… (14 read-only insight tools — docs/TOOL_CONTRACTS_V1.md)
 
-QUE → Tool Selection → Quizzer Internal API
-    → Backend Business Logic → Database
-    → Structured Result → QUE → Answer</pre></div>
+QUE → deterministic select → POST /internal/que/v1/tools/invoke
+    → ownership check → structured envelope → TOOL_RESULT → generate</pre></div>
             </div>
 
             <div class="sub"><h4>Implementation Tasks</h4>
@@ -1013,7 +1090,7 @@ QUE → Tool Selection → Quizzer Internal API
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
+                <div class="status"><span class="status-chip done">SHIPPED</span></div>
                 <h3>Phase 5 — Identity + Permissions + Capabilities + Policy</h3>
                 <p class="phase-goal">Authentication, authorization, and policy are three different questions. Answer them in three different places.</p>
               </div>
@@ -1094,9 +1171,9 @@ Application Validation + Authorization + Tool Constraints
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip later">BUILD LATER</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 6 — Retrieval Evolution: Hybrid Search</h3>
-                <p class="phase-goal">Add this once you have evidence dense-only retrieval is missing things — not before.</p>
+                <p class="phase-goal">Dense + BM25 RRF shipped after eval evidence; neural cross-encoder deferred.</p>
               </div>
               <div class="phase-progress"><div class="track"><div class="fill" data-progressfill="phase6"></div></div><div class="lbl" data-progresslabel="phase6">0 / 0 tasks</div></div>
             </div>
@@ -1135,7 +1212,7 @@ Application Validation + Authorization + Tool Constraints
             <div class="sub"><h4>Metrics</h4><span class="badge metric">Recall@K delta vs. Phase 2</span><span class="badge metric">P95 Retrieval Latency</span></div>
             <div class="sub"><h4>Trade-offs</h4><p>Better recall on exact-term queries, at the cost of a second search system to maintain and a reranking hop to budget for.</p></div>
 
-            <div class="donot"><div class="k">Do not add yet</div>Don't build this speculatively. If Phase 2's eval set already shows strong recall, this is premature complexity.</div>
+            <div class="donot"><div class="k">Deferred</div>Neural cross-encoder rerank (p6-t3) — recall already improved with RRF; add CE only if a new miss cluster needs it and P95 allows.</div>
 
             <div class="sub"><h4>Interview Perspective</h4><div class="interview"><div class="k">How to explain it</div><blockquote>"I only introduced hybrid search after the eval set showed a specific pattern — exact-term queries dense retrieval consistently missed. That gave me a measurable before/after instead of 'this should help.'"</blockquote></div></div>
 
@@ -1157,9 +1234,9 @@ Application Validation + Authorization + Tool Constraints
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 7 — Agent Runtime</h3>
-                <p class="phase-goal">Formalize the loop for the requests that actually need one — with the limits from Phase 4 now enforced at the runtime level, not per-tool.</p>
+                <p class="phase-goal">Explicit workflow-vs-agent routing and a bounded multi-tool loop over the Phase 4/5 tool set — not ReAct.</p>
               </div>
               <div class="phase-progress"><div class="track"><div class="fill" data-progressfill="phase7"></div></div><div class="lbl" data-progresslabel="phase7">0 / 0 tasks</div></div>
             </div>
@@ -1216,12 +1293,12 @@ Workflow   Agent Loop
         </div>
       </section>
 
-      <section class="block" id="phase8" data-tags="later build">
+      <section class="block" id="phase8" data-tags="build">
         <div class="phase" data-phase="phase8">
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip later">BUILD LATER</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 8 — LLM Gateway + Model Routing</h3>
                 <p class="phase-goal">Stop hard-coding one provider into every call site. Route by complexity, cost, and availability.</p>
               </div>
@@ -1235,10 +1312,13 @@ Workflow   Agent Loop
             <div class="sub"><h4>Why Now</h4><p>By this phase you have real traffic data: simple scope checks vs. multi-tool reasoning. Paying frontier prices for "how do I create a quiz?" is now a measurable waste — that's the trigger, not "gateways are best practice."</p></div>
 
             <div class="sub"><h4>Architecture</h4>
-              <div class="diagram"><pre>QUE Agent → LLM Gateway
-              ├── Model A (fast / cheap)
-              └── Model B (strong / expensive)
-Routed by: request complexity (Phase 1), cost budget, latency budget, availability</pre></div>
+              <div class="diagram"><pre>QUE Agent → LLM Gateway (OpenRouter, OpenAI-compatible)
+              ├── openai/gpt-4o-mini          (preferred on agent / multi_step)
+              ├── google/gemma-4-31b-it:free
+              └── nvidia/nemotron-3.5-lightning:free
+Round-robin keys (LLM_API_KEY + LLM_API_KEY_N) and models.
+Failover: next key, then next model. Cap 3 attempts + backoff.
+Stream: do not splice two models into one SSE reply.</pre></div>
             </div>
 
             <div class="sub"><h4>Implementation Tasks</h4>
@@ -1254,7 +1334,7 @@ Routed by: request complexity (Phase 1), cost budget, latency budget, availabili
             <div class="sub"><h4>Metrics</h4><span class="badge metric">Cost per Request</span><span class="badge metric">Fallback Rate</span><span class="badge metric">P95 Latency by Route</span></div>
             <div class="sub"><h4>Trade-offs</h4><p>An abstraction layer to maintain, in exchange for provider resilience and a lever to cut cost without a code change.</p></div>
 
-            <div class="donot"><div class="k">Do not add yet</div>A gateway before you have more than one model in production use — an abstraction with one implementation is speculative complexity.</div>
+            <div class="donot"><div class="k">Did not add</div>Native multi-provider SDKs, per-user sticky sessions, or cost accounting beyond model + latency logs. Embeddings stay off the chat round-robin.</div>
 
             <div class="sub"><h4>Interview Perspective</h4><div class="interview"><div class="k">How to explain it</div><blockquote>"The gateway exists because cost and latency data showed most requests didn't need the frontier model. Routing on measured complexity cut cost per request without moving the eval-suite quality numbers."</blockquote></div></div>
 
@@ -1271,12 +1351,12 @@ Routed by: request complexity (Phase 1), cost budget, latency budget, availabili
         </div>
       </section>
 
-      <section class="block" id="phase9" data-tags="later build">
+      <section class="block" id="phase9" data-tags="build">
         <div class="phase" data-phase="phase9">
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip later">BUILD LATER</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 9 — Caching + Data Freshness</h3>
                 <p class="phase-goal">Every cache layer is also a personalization-leak risk. Design isolation and freshness before you design speed.</p>
               </div>
@@ -1325,7 +1405,7 @@ CRITICAL        → bypass stale cache        (e.g. in-progress grading)</pre></
             <div class="sub"><h4>Metrics</h4><span class="badge metric">Cache Hit Rate</span><span class="badge metric">P95 Latency (cached vs. uncached)</span><span class="badge metric">Cost Reduction from Caching</span></div>
             <div class="sub"><h4>Trade-offs</h4><p>Meaningful cost and latency wins, at the cost of a cache-invalidation surface that has to be reasoned about per data type, not once globally.</p></div>
 
-            <div class="donot"><div class="k">Do not add yet</div>Don't cache personalized or fast-changing data with a long TTL "for performance" before the isolation key is defined.</div>
+            <div class="donot"><div class="k">Did not add</div>Redis, semantic response cache, or caching Quizzer tool JSON. Conversation MemorySaver stays in-process per worker.</div>
 
             <div class="sub"><h4>Interview Perspective</h4><div class="interview"><div class="k">How to explain it</div><blockquote>"I split caches by data character — deterministic, semantic, personalized, time-sensitive — because a uniform cache policy is how you end up serving one student's score to another."</blockquote></div></div>
 
@@ -1347,7 +1427,7 @@ CRITICAL        → bypass stale cache        (e.g. in-progress grading)</pre></
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 10 — Guardrails + AI Security</h3>
                 <p class="phase-goal">No single component is "the guardrail." Security is a layered property of the whole pipeline.</p>
               </div>
@@ -1406,7 +1486,7 @@ Application Validation + Authorization + Tool Constraints
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 11 — Unified Evaluation Platform</h3>
                 <p class="phase-goal">Every change is a hypothesis. This phase doesn't start evaluation — it unifies the evals already seeded since Phase 1.</p>
               </div>
@@ -1471,7 +1551,7 @@ Application Validation + Authorization + Tool Constraints
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 12 — Observability + Cost Governance</h3>
                 <p class="phase-goal">Basic logging started in Phase 1. This phase turns it into full tracing, dashboards, and a budget the system actually enforces.</p>
               </div>
@@ -1545,7 +1625,7 @@ Application Validation + Authorization + Tool Constraints
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip later">BUILD LATER</span></div>
+                <div class="status"><span class="status-chip done">DONE</span></div>
                 <h3>Phase 13 — Reliability Engineering</h3>
                 <p class="phase-goal">Design for the failure you haven't seen yet, not just the one you already fixed.</p>
               </div>
@@ -1555,17 +1635,19 @@ Application Validation + Authorization + Tool Constraints
           </div>
           <div class="phase-body">
 
-            <div class="sub"><h4>Objective</h4><p>Systematically test and harden every failure mode surfaced by earlier phases: LLM timeouts, provider outages, tool failures, database failures, cache outages.</p></div>
+            <div class="sub"><h4>Objective</h4><p>Systematically test and harden every failure mode surfaced by earlier phases: LLM timeouts, provider outages, tool failures, cache misses, and invalid Quizzer envelopes.</p></div>
             <div class="sub"><h4>Why Now</h4><p>Now that every dependency exists — gateway, cache, tools, retrieval — you have a complete list of things that can fail. Testing failure modes before they exist would be guessing.</p></div>
 
             <div class="sub"><h4>Failure Test Matrix</h4>
               <table>
                 <tr><th>Failure</th><th>Expected behavior</th></tr>
-                <tr><td>LLM timeout</td><td>Fallback model or honest "try again" message</td></tr>
-                <tr><td>Provider outage</td><td>Circuit breaker trips, fallback route engages</td></tr>
-                <tr><td>Tool timeout</td><td>Partial answer with a stated gap, not a hang</td></tr>
-                <tr><td>Cache outage</td><td>Falls through to source, slower but correct</td></tr>
-                <tr><td>Invalid JSON from model</td><td>One bounded repair attempt, then graceful failure</td></tr>
+                <tr><td>LLM timeout / 5xx</td><td>Next gateway lane, then public try-again</td></tr>
+                <tr><td>LLM 401 / 403 / 400</td><td>Do not retry — fail that turn</td></tr>
+                <tr><td>Provider circuit open</td><td>Skip OpenRouter; honest try-again</td></tr>
+                <tr><td>Tool timeout</td><td>TOOL_ERROR / agent stop — no hang</td></tr>
+                <tr><td>Tool circuit open</td><td>TOOL_ERROR without calling Quizzer</td></tr>
+                <tr><td>Cache disabled / miss</td><td>Fall through to retrieve + LLM, still correct</td></tr>
+                <tr><td>Invalid JSON from Quizzer</td><td>ToolClientError → TOOL_ERROR (not an LLM JSON repair)</td></tr>
               </table>
             </div>
 
@@ -1603,7 +1685,7 @@ Application Validation + Authorization + Tool Constraints
           <div class="phase-head">
             <div class="toprow">
               <div>
-                <div class="status"><span class="status-chip later">BUILD LATER</span></div>
+                <div class="status"><span class="status-chip build">BUILD NOW</span></div>
                 <h3>Phase 14 — Async Workflows</h3>
                 <p class="phase-goal">Not every question deserves to hold a connection open.</p>
               </div>
@@ -2031,6 +2113,70 @@ var TASK_KEY = 'que_task_state_v1';
 var THEME_KEY = 'que_theme_v1';
 var DECISIONS_KEY = 'que_decisions_v1';
 var SCORECARD_KEY = 'que_scorecard_v1';
+var CURRENT_KEY = 'que_handbook_current_phase_v1';
+var BASELINE_APPLIED_KEY = 'que_handbook_baseline_v10';
+
+/* Repo baseline — matches docs/BUILD_PROGRESS.md (2026-09). */
+var REPO_BASELINE_TASKS = [
+  'p0-t1','p0-t2','p0-t3','p0-t4',
+  'p1-t1','p1-t2','p1-t3','p1-t4','p1-t5','p1-t6',
+  'p1-cp1','p1-cp2','p1-cp3','p1-cp4','p1-cp5',
+  'p2-pre1','p2-pre2','p2-pre3',
+  'p2-t1','p2-t2','p2-t3','p2-t4','p2-t5','p2-t6','p2-t7',
+  'p2-cp1','p2-cp2','p2-cp3','p2-cp4',
+  'p3-t1','p3-t2','p3-t3','p3-t4',
+  'p3-cp1','p3-cp2',
+  'p4-t1','p4-t2','p4-t3','p4-t6','p4-t7',
+  'p4-cp1',
+  'p5-t1','p5-t2','p5-t3','p5-t4','p5-t5',
+  'p5-cp1','p5-cp2',
+  'p6-t1','p6-t2','p6-t4',
+  'p6-cp1',
+  'p7-t1','p7-t2','p7-t3','p7-t4',
+  'p7-cp1',
+  'p8-t1','p8-t2','p8-t3','p8-t4',
+  'p8-cp1',
+  'p9-t1','p9-t2','p9-t3','p9-t4','p9-t5',
+  'p9-cp1',
+  'p10-t1','p10-t2','p10-t3','p10-t4','p10-t5',
+  'p10-cp1',
+  'p11-t1','p11-t2','p11-t3','p11-t4','p11-t5',
+  'p11-cp1',
+  'p12-t1','p12-t2','p12-t3','p12-t4','p12-t5',
+  'p12-cp1',
+  'p13-t1','p13-t2','p13-t3','p13-t4',
+  'p13-cp1'
+];
+var REPO_BASELINE_SCORECARD = {
+  Architecture: 'Validated',
+  Security: 'Validated',
+  RAG: 'Validated',
+  Tools: 'Implemented',
+  Evaluation: 'Validated',
+  Observability: 'Validated',
+  Reliability: 'Validated',
+  Scalability: 'Not Started',
+  Cost: 'Implemented',
+  Testing: 'Validated',
+  Deployment: 'Implemented',
+  Documentation: 'Validated'
+};
+var DEFAULT_CURRENT_PHASE = 'phase14';
+
+var PHASE_META = {};
+document.querySelectorAll('.phase[data-phase]').forEach(function(el){
+  var id = el.getAttribute('data-phase');
+  var h = el.querySelector('h3');
+  PHASE_META[id] = {
+    id: id,
+    title: h ? h.textContent.replace(/^Phase\s+\d+\s*[—–-]\s*/i,'').trim() : id,
+    fullTitle: h ? h.textContent.trim() : id,
+    goal: (el.querySelector('.phase-goal') || {}).textContent || ''
+  };
+});
+var PHASE_ORDER = Object.keys(PHASE_META).sort(function(a,b){
+  return parseInt(a.replace('phase',''),10) - parseInt(b.replace('phase',''),10);
+});
 
 /* ---------- theme ---------- */
 function applyTheme(t){
@@ -2044,49 +2190,204 @@ document.getElementById('themeBtn').addEventListener('click', function(){
 });
 
 /* ---------- task / checkpoint checkbox state ---------- */
-var taskState = lsGet(TASK_KEY, {});
+var currentPhase = lsGet(CURRENT_KEY, DEFAULT_CURRENT_PHASE);
+var taskState = lsGet(TASK_KEY, {}) || {};
+if(!lsGet(BASELINE_APPLIED_KEY, false)){
+  REPO_BASELINE_TASKS.forEach(function(id){ taskState[id] = true; });
+  lsSet(TASK_KEY, taskState);
+  lsSet(BASELINE_APPLIED_KEY, true);
+  currentPhase = DEFAULT_CURRENT_PHASE;
+  lsSet(CURRENT_KEY, currentPhase);
+  var sc0 = lsGet(SCORECARD_KEY, {}) || {};
+  Object.keys(REPO_BASELINE_SCORECARD).forEach(function(k){
+    if(!sc0[k] || sc0[k]==='Not Started') sc0[k] = REPO_BASELINE_SCORECARD[k];
+  });
+  lsSet(SCORECARD_KEY, sc0);
+}
 
 function allTaskInputs(){ return Array.from(document.querySelectorAll('input.task, input.cp')); }
 
+function applyTaskStateToDom(){
+  allTaskInputs().forEach(function(inp){
+    var id = inp.getAttribute('data-id');
+    inp.checked = !!taskState[id];
+  });
+}
+applyTaskStateToDom();
+
 allTaskInputs().forEach(function(inp){
-  var id = inp.getAttribute('data-id');
-  if(taskState[id]) inp.checked = true;
   inp.addEventListener('change', function(){
-    taskState[id] = inp.checked;
+    taskState[inp.getAttribute('data-id')] = inp.checked;
     lsSet(TASK_KEY, taskState);
     recomputeProgress();
   });
 });
 
+/* Inject "Set as current" on each phase header */
+document.querySelectorAll('.phase[data-phase]').forEach(function(phaseEl){
+  var head = phaseEl.querySelector('.phase-head .toprow');
+  if(!head) return;
+  var btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'pin-current-btn';
+  btn.setAttribute('data-pin', phaseEl.getAttribute('data-phase'));
+  btn.textContent = 'Set as current';
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;align-items:flex-end;gap:8px;';
+  var prog = head.querySelector('.phase-progress');
+  if(prog){
+    wrap.appendChild(prog);
+    wrap.appendChild(btn);
+    head.appendChild(wrap);
+  } else {
+    head.appendChild(btn);
+  }
+  btn.addEventListener('click', function(){
+    currentPhase = btn.getAttribute('data-pin');
+    lsSet(CURRENT_KEY, currentPhase);
+    recomputeProgress();
+  });
+});
+
+function phaseStats(phaseId){
+  var phaseEl = document.querySelector('.phase[data-phase="'+phaseId+'"]');
+  if(!phaseEl) return {done:0,total:0,pct:0};
+  var inputs = Array.from(phaseEl.querySelectorAll('input.task, input.cp'));
+  var done = inputs.filter(function(i){ return i.checked; }).length;
+  var total = inputs.length;
+  return {done:done, total:total, pct: total ? Math.round((done/total)*100) : 0};
+}
+
 function recomputeProgress(){
   var totalAll = 0, doneAll = 0;
-  document.querySelectorAll('.checklist.tasks[data-phase]').forEach(function(group){
-    var phaseId = group.getAttribute('data-phase');
-    var inputs = Array.from(group.querySelectorAll('input.task'));
-    var done = inputs.filter(function(i){ return i.checked; }).length;
-    var total = inputs.length;
-    totalAll += total; doneAll += done;
-    var pct = total ? Math.round((done/total)*100) : 0;
+  PHASE_ORDER.forEach(function(phaseId){
+    var stats = phaseStats(phaseId);
+    totalAll += stats.total; doneAll += stats.done;
     var fill = document.querySelector('[data-progressfill="'+phaseId+'"]');
     var label = document.querySelector('[data-progresslabel="'+phaseId+'"]');
-    if(fill) fill.style.width = pct + '%';
-    if(label) label.textContent = done + ' / ' + total + ' tasks';
+    if(fill) fill.style.width = stats.pct + '%';
+    if(label) label.textContent = stats.done + ' / ' + stats.total + ' tasks';
     var dot = document.querySelector('[data-dot="'+phaseId+'"]');
+    var statusClass = 'status-notstarted', statusVal='notstarted';
+    if(stats.done === stats.total && stats.total > 0){ statusClass = 'status-complete'; statusVal='complete'; }
+    else if(stats.done > 0){ statusClass = 'status-inprogress'; statusVal='inprogress'; }
     if(dot){
       dot.classList.remove('status-notstarted','status-inprogress','status-complete');
-      var statusClass = 'status-notstarted', statusVal='notstarted';
-      if(done === total && total > 0){ statusClass = 'status-complete'; statusVal='complete'; dot.textContent='✓'; }
-      else if(done > 0){ statusClass = 'status-inprogress'; statusVal='inprogress'; dot.textContent='◐'; }
-      else { dot.textContent='●'; }
       dot.classList.add(statusClass);
-      var phaseEl = document.querySelector('.phase[data-phase="'+phaseId+'"]');
-      if(phaseEl) phaseEl.setAttribute('data-status', statusVal);
+      dot.textContent = statusVal==='complete' ? '✓' : (statusVal==='inprogress' ? '◐' : '●');
+    }
+    var phaseEl = document.querySelector('.phase[data-phase="'+phaseId+'"]');
+    if(phaseEl){
+      phaseEl.setAttribute('data-status', statusVal);
+      phaseEl.setAttribute('data-current', phaseId === currentPhase ? 'true' : 'false');
+    }
+    var pin = document.querySelector('.pin-current-btn[data-pin="'+phaseId+'"]');
+    if(pin){
+      pin.classList.toggle('active', phaseId === currentPhase);
+      pin.textContent = phaseId === currentPhase ? 'Current phase' : 'Set as current';
+    }
+    var nav = document.querySelector('.navlink[data-phase="'+phaseId+'"]');
+    if(nav){
+      nav.classList.toggle('current-phase', phaseId === currentPhase);
+      var badge = nav.querySelector('.here-badge');
+      if(phaseId === currentPhase){
+        if(!badge){
+          badge = document.createElement('span');
+          badge.className = 'here-badge';
+          badge.textContent = 'HERE';
+          nav.appendChild(badge);
+        }
+      } else if(badge){
+        badge.remove();
+      }
     }
   });
   var overallPct = totalAll ? Math.round((doneAll/totalAll)*100) : 0;
   document.getElementById('hdrProgressFill').style.width = overallPct + '%';
   document.getElementById('hdrProgressPct').textContent = overallPct + '%';
+  updateYouAreHere();
+  renderJourneyBoard();
 }
+
+function updateYouAreHere(){
+  var meta = PHASE_META[currentPhase] || PHASE_META[DEFAULT_CURRENT_PHASE];
+  if(!meta) return;
+  var stats = phaseStats(meta.id);
+  document.getElementById('yahTitle').textContent = meta.fullTitle;
+  var extra = meta.id === 'phase2'
+    ? ' Keyword packs shipped (pre-RAG). Dense RAG tasks still open.'
+    : '';
+  document.getElementById('yahSub').textContent =
+    (meta.goal || '') + ' · ' + stats.done + '/' + stats.total + ' checked.' + extra;
+}
+
+function renderJourneyBoard(){
+  var buckets = {done:[], now:[], next:[], later:[]};
+  var curIdx = PHASE_ORDER.indexOf(currentPhase);
+  if(curIdx < 0) curIdx = PHASE_ORDER.indexOf(DEFAULT_CURRENT_PHASE);
+  PHASE_ORDER.forEach(function(id, idx){
+    var stats = phaseStats(id);
+    var item = {id:id, meta:PHASE_META[id], stats:stats};
+    if(id === currentPhase) buckets.now.push(item);
+    else if(stats.total > 0 && stats.done === stats.total) buckets.done.push(item);
+    else if(idx === curIdx + 1) buckets.next.push(item);
+    else buckets.later.push(item);
+  });
+  function fill(listId, items){
+    var el = document.getElementById(listId);
+    if(!el) return;
+    el.innerHTML = '';
+    if(!items.length){
+      el.innerHTML = '<div class="journey-empty">None</div>';
+      return;
+    }
+    items.forEach(function(it){
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'journey-card';
+      btn.innerHTML = '<span class="jc-num">'+it.id.replace('phase','')+'</span>'+
+        (it.meta ? it.meta.title : it.id)+
+        '<span class="jc-pct">'+it.stats.pct+'%</span>';
+      btn.addEventListener('click', function(){ scrollToId(it.id); });
+      el.appendChild(btn);
+    });
+  }
+  fill('journeyDone', buckets.done);
+  fill('journeyNow', buckets.now);
+  fill('journeyNext', buckets.next);
+  fill('journeyLater', buckets.later);
+}
+
+document.getElementById('yahJump').addEventListener('click', function(){
+  scrollToId(currentPhase);
+});
+
+function applyRepoBaseline(){
+  REPO_BASELINE_TASKS.forEach(function(id){ taskState[id] = true; });
+  lsSet(TASK_KEY, taskState);
+  currentPhase = DEFAULT_CURRENT_PHASE;
+  lsSet(CURRENT_KEY, currentPhase);
+  var sc = lsGet(SCORECARD_KEY, {}) || {};
+  Object.keys(REPO_BASELINE_SCORECARD).forEach(function(k){
+    if(!sc[k] || sc[k]==='Not Started') sc[k] = REPO_BASELINE_SCORECARD[k];
+  });
+  lsSet(SCORECARD_KEY, sc);
+  lsSet(BASELINE_APPLIED_KEY, true);
+  applyTaskStateToDom();
+  if(typeof scorecard !== 'undefined'){
+    scorecard = sc;
+  }
+  if(typeof renderScorecard === 'function'){
+    renderScorecard();
+  }
+  recomputeProgress();
+}
+
+document.getElementById('baselineBtn').addEventListener('click', function(){
+  if(!confirm('Mark Phase 0–13 complete (repo baseline: RAG + tools + policy + hybrid + agent loop + gateway + cache + guardrails + evals + observability + reliability)?')) return;
+  applyRepoBaseline();
+});
+
 recomputeProgress();
 
 /* ---------- reset progress ---------- */
@@ -2094,10 +2395,10 @@ document.getElementById('resetBtn').addEventListener('click', function(){
   if(!confirm('Reset all task progress? This clears checked items but keeps decision records and scorecard.')) return;
   taskState = {};
   lsSet(TASK_KEY, taskState);
+  lsSet(BASELINE_APPLIED_KEY, false);
   allTaskInputs().forEach(function(inp){ inp.checked = false; });
   recomputeProgress();
 });
-
 /* ---------- sidebar mobile + nav collapse ---------- */
 var menuBtn = document.getElementById('menuBtn');
 var sidebar = document.getElementById('sidebar');
