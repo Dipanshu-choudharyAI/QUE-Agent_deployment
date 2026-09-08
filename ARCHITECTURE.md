@@ -2,8 +2,8 @@
 
 This document explains how QUE is structured, how chat connects to Quizzer, and what every important file does.
 
-**Current phase:** LangGraph chat (`prepare → knowledge → generate`) + product knowledge packs.  
-No Quizzer DB access, no embeddings, no account-action tools yet.
+**Current phase:** LangGraph chat (`prepare → context → tools|agent|knowledge → generate`) + product knowledge packs + UI context + optional insight tools (`QUE_TOOLS_ENABLED`) + bounded multi-tool loop (Phase 7) + LLM gateway (Phase 8) + freshness-gated cache (Phase 9) + input/output guardrails (Phase 10) + unified offline eval suite (Phase 11) + in-process observability/cost (Phase 12) + tested failure matrix (Phase 13) + confirmed write tools + rate limiting + production readiness guards (Phase 14).  
+No Quizzer DB access from QUE. Tools call Quizzer internal HTTP APIs only.
 
 ---
 
@@ -18,14 +18,14 @@ Chat traffic does **not** proxy through Quizzer Backend (that would load Quizzer
 │ Quizzer UI  │ ────────────► │ Quizzer Backend  │
 │ (browser)   │  POST /que/session               │
 │             │ ◄──────────── │ mints Que JWT    │
-└──────┬──────┘               └──────────────────┘
-       │
-       │  Authorization: Bearer <que_access>
-       │  POST /v1/chat/stream  (SSE stays on QUE)
-       ▼
-┌─────────────┐                               ┌─────────────┐
-│  QUE-Agent  │ ────────────────────────────► │     LLM     │
-│   :8100     │                               └─────────────┘
+└──────┬──────┘               └────────┬─────────┘
+       │                               │
+       │  Authorization: Bearer        │  QUE → Quizzer (tools, flag on)
+       │  POST /v1/chat/stream         │  X-Que-Service-Key + X-Que-User-Id
+       ▼                               │  POST /internal/que/v1/tools/invoke
+┌─────────────┐                        │
+│  QUE-Agent  │ ───────────────────────┘
+│   :8100     │ ────────────────────────► LLM
 └─────────────┘
 ```
 
@@ -34,9 +34,9 @@ Chat traffic does **not** proxy through Quizzer Backend (that would load Quizzer
 | Browser → QUE for chat | Offload Quizzer; lower latency for streaming |
 | Quizzer → mint only (`/que/session`) | Proves the user is logged in; light/rare request |
 | Shared `QUE_JWT_SECRET` | QUE verifies tokens Quizzer minted |
-| `QUE_SERVICE_KEY` never in browser | Server/ops + future QUE→Quizzer tools only |
-| History sent each turn | QUE is **stateless** (no chat DB / checkpointer yet) |
-| `user_id` opaque | From JWT `sub` / request body — audit only, never DB reads |
+| `QUE_SERVICE_KEY` never in browser | Server/ops + QUE→Quizzer tools only |
+| History sent each turn | QUE is **stateless** (no chat DB; MemorySaver is in-process) |
+| `user_id` opaque | From JWT `sub` / request body — Quizzer re-checks ownership on tools |
 
 Deploy shape: `app.quizzer…` (frontend/API) and `que.quizzer…` (this service). Set QUE `CORS_ALLOW_ORIGINS` to the frontend origin(s).
 
@@ -74,20 +74,24 @@ app/services/chat_service.py    # complete vs SSE framing
         ▼
 app/orchestration/pipeline.py
   decide_turn → Request Understanding (scope/intent/route)
-       ├─ refuse / clarify / tool-pending / canned  → early reply (no LLM)
-       └─ knowledge → LangGraph
+       ├─ refuse / clarify / canned  → early reply (no LLM)
+       └─ dialog → LangGraph
               prepare  → sanitize history + inject identity
-              knowledge → CORE.md + up to 2 keyword-matched guides
-              generate → LLM reply
+              context  → labeled QUIZZER_UI_CONTEXT (Phase 3)
+              route    → tools (insight) | knowledge (RAG)
+              generate → LLM reply (TOOL_RESULT and/or packs grounded)
         │
         ▼
 ChatResponse  or  SSE: meta(+understanding) → token* → done
 ```
 
-Quizzer Backend is **not** on this path after the session mint.
+Quizzer Backend is **not** on the chat SSE path after the session mint.
+When `QUE_TOOLS_ENABLED=true`, QUE may call Quizzer `/internal/que/v1/tools/*` mid-turn.
 
 Golden scope eval: `evals/scope_golden.json` · `uv run python scripts/run_scope_eval.py`  
+Tool selection eval: `evals/tool_cases.json` · `uv run python scripts/run_tool_eval.py`  
 Build tracker: [`docs/BUILD_PROGRESS.md`](docs/BUILD_PROGRESS.md) · handbook: [`docs/que-agent-handbook.html`](docs/que-agent-handbook.html)
+Contracts: [`docs/TOOL_CONTRACTS_V1.md`](docs/TOOL_CONTRACTS_V1.md)
 
 ---
 
@@ -132,7 +136,13 @@ Que-Agent/
 | HTTP | `app/api/` | Routes, status codes, SSE response headers |
 | Service | `app/services/` | SSE framing, call pipeline |
 | Orchestration | `app/orchestration/` | Map request ↔ graph; history sanitize |
-| Agent | `app/graphs/` | `prepare → knowledge → generate` |
+| Agent | `app/graphs/` | `prepare → context → tools\|agent\|knowledge → generate` |
+| Tools | `app/tools/` | Registry, selector, executor, Quizzer client |
+| Policy | `app/policy/` | Fail-closed role gate (Phase 5) |
+| Guardrails | `app/guardrails/` | Input/output scans (Phase 10); not a policy replacement |
+| Observability | `app/obs/` | Spans, cost, in-process percentiles, budgets (Phase 12) |
+| Rate limiting | `app/core/ratelimit.py` | In-process token bucket per user/IP (Phase 14) |
+| Evals | `app/evals/` | Groundedness heuristic, suite scoring, online sampler |
 | Identity | `app/identity/` | Short system prompt / persona metadata |
 | Knowledge code | `app/knowledge/` | Select which markdown packs to inject |
 | Knowledge data | `knowledge/` | Product guides (not Python) |
@@ -157,7 +167,7 @@ FastAPI factory (`create_app`):
 
 - Lifespan logging (env, version, model, insecure-auth flag)
 - CORS for Quizzer frontend origins (`CORS_ALLOW_ORIGINS`) so browser → QUE works
-- Mounts `health` + `chat` routers
+- Mounts `health` + `chat` + `ops` routers
 - Docs (`/docs`) only when `APP_ENV` is local/dev
 
 Exports module-level `app` for gunicorn/uvicorn.
@@ -170,6 +180,10 @@ Exports module-level `app` for gunicorn/uvicorn.
 - `GET /health` — no auth  
 - Returns `{ status, service, version, env }`  
 - Used by Docker `HEALTHCHECK` and load balancers
+
+#### `app/api/ops.py`
+- `GET /v1/ops/metrics` — **service key only** (a Que JWT is 401)
+- In-process P50/P95/P99, cost, `alerts[]`. Not Grafana.
 
 #### `app/api/chat.py`
 All routes under `/v1` require `require_chat_auth` (Bearer Que JWT **or** service key).  
@@ -191,10 +205,22 @@ Maps `ValueError` → 400, `LLMError` → 503 (not configured) or 502 (upstream 
 Pydantic contracts:
 
 - `ChatMessage` — `role` ∈ `system|user|assistant`, content 1–32k chars (stripped)
-- `ChatRequest` — `messages` (1–100), optional `conversation_id`, optional opaque `user_id`
+- `QueUiContext` — structured page/entity/role (Phase 3 UX hint; not auth)
+- `ChatRequest` — `messages` (1–100), optional `conversation_id`, optional opaque `user_id`, optional `context`
 - `ChatResponse` — assistant `message` + `conversation_id` + `model`
 
 Client-sent `system` messages are **dropped** later in `sanitize_history` so callers cannot override identity.
+
+#### Context precedence (Phase 3)
+
+Highest first:
+
+1. Explicit user wording (named exam/id in the message)
+2. Conversational resolve (`resolved_query` / topic)
+3. Structured `QueUiContext` (page / entity / server-stamped role)
+4. Retrieved knowledge packs
+
+UI context is injected as a labeled `SystemMessage` (`QUIZZER_UI_CONTEXT`), never concatenated into the user message. Quizzer BFF overwrites `user_role` from the authenticated User before QUE sees it.
 
 ---
 
@@ -205,8 +231,16 @@ Client-sent `system` messages are **dropped** later in `sanitize_history` so cal
 
 - App: `APP_ENV`, name, version, CORS (frontend origins for browser → QUE)
 - Auth: `QUE_JWT_SECRET` (+ algo/aud/iss), `QUE_SERVICE_KEY`, `ALLOW_INSECURE_LOCAL_NO_AUTH`
-- LLM: key, base URL, model, timeout, max tokens, temperature
+- LLM: `LLM_API_KEY` / `LLM_API_KEY_N`, `LLM_MODELS` (or `LLM_MODEL`), gateway retry/backoff, temperature
+- LLM gateway (Phase 8): `LLM_GATEWAY_RR`, `LLM_MAX_ATTEMPTS`, `LLM_RETRY_BASE_MS`, `LLM_RETRY_CAP_MS`
+- Cache (Phase 9): `QUE_CACHE_*` TTLs including `QUE_CACHE_RETRIEVAL_TTL_SECONDS`; freshness policy skips live/tool replies
 - Memory: `QUE_MEMORY_ENABLED`, `QUE_MEMORY_MAX_TURNS` (LangGraph MemorySaver)
+- Tools (Phase 4): `QUE_TOOLS_ENABLED`, `QUIZZER_INTERNAL_BASE_URL`, tool timeouts/circuit
+- Agent loop (Phase 7): `QUE_AGENT_MAX_STEPS`, `QUE_AGENT_MAX_EXECUTION_MS`, `QUE_AGENT_MAX_TOOL_CHARS`
+- Guardrails (Phase 10): `QUE_GUARDRAILS_ENABLED` (default true)
+- Online eval sample (Phase 11): `QUE_EVAL_ONLINE_SAMPLE`, `QUE_EVAL_ONLINE_RATE`, `QUE_EVAL_ONLINE_PATH`
+- Observability (Phase 12): `QUE_OBS_*`, `QUE_BUDGET_*`, `QUE_ALERT_*`
+- Reliability (Phase 13): `QUE_LLM_CIRCUIT_FAILURES`, `QUE_LLM_CIRCUIT_TTL_SECONDS`
 - Server: host, port, log level
 
 **Production guards:** insecure no-auth forbidden outside local; weak JWT/service secrets rejected.  
@@ -224,11 +258,23 @@ Decode/verify Quizzer-minted Que access JWTs (`typ=que_access`, audience/issuer 
 
 Browser never receives the service key.
 
+`require_service_key_only`: ops metrics — service key only; a valid Que JWT is still 401.
+
 #### `app/core/llm.py`
 - `LLMError` — normalized failure type
-- `get_chat_model()` — builds LangChain `ChatOpenAI` against any OpenAI-compatible API (OpenRouter by default), streaming enabled
+- `get_chat_model()` — builds LangChain `ChatOpenAI` for one gateway lane (OpenRouter by default)
+- `ainvoke_chat()` / `astream_chat()` — round-robin keys + models, capped failover with backoff
+- **Not retryable:** 400/401/403/404/422. Retryable: 408/429/5xx/timeouts
+- LLM circuit (`QUE_LLM_CIRCUIT_FAILURES` / `QUE_LLM_CIRCUIT_TTL_SECONDS`); open → `LLMError` → public try-again
+- Records `usage_metadata` (prompt/completion tokens) for Phase 12 cost
+- Agent / `complexity=multi_step` prefers `openai/gpt-4o-mini` first, then the rest of the pool
+- Logs `model`, `key_index`, `attempt`, `fallback` — never the API key
+- Embeddings (`app/knowledge/embeddings.py`) stay on the first configured key
 
-All LLM access should go through this module.
+Call sites: `generate_node` and `stream_turn_events`. Do not construct `ChatOpenAI` elsewhere.
+
+#### `app/core/que_cache.py`
+In-process TTL/LRU (not Quizzer Redis): FAQ intents, canned variants, static how-to LLM replies, product retrieval. Phase 9 policy (`app/orchestration/cache_policy.py`) skips LLM/retrieval cache on live/tool/critical turns. LLM keys always include `user_id` or `anon`.
 
 #### `app/core/errors.py`
 Maps exceptions to **stable public codes** (no provider stack traces):
@@ -269,17 +315,24 @@ Thin HTTP-facing layer over the pipeline:
 
 Protects latency/cost and identity integrity.
 
+#### `app/orchestration/runtime_mode.py` / `agent_loop.py`
+Phase 7 — explicit `knowledge|workflow|agent` routing and a bounded multi-tool loop
+(`QUE_AGENT_MAX_STEPS`, `QUE_TOOL_MAX_CALLS`, wall clock, TOOL_RESULT char cap).
+
+#### `app/guardrails/`
+Phase 10 — layered checks on top of Phase 5 policy (not a replacement). `input.py` runs at the start of `decide_turn`; Quizzer wording does not waive a jailbreak. `output.py` scans the finished reply in `generate_node` and after stream join (leaked text is not cached). `sanitize.py` drops injection lines from retrieved/tool payloads only.
+
 #### `app/orchestration/pipeline.py`
 Bridge between HTTP schemas and LangGraph:
 
 | Function | Role |
 |---|---|
 | `_request_to_input` | Build initial `QueGraphState` |
-| `prepare_turn` | Run prepare→knowledge without LLM (tests) |
+| `prepare_turn` | Run prepare→context→(tools\|agent\|knowledge) without LLM (tests) |
 | `complete` | `graph.ainvoke` → extract last AI text → `ChatResponse` |
-| `stream_tokens` | Same prepare→knowledge path, then `model.astream` |
+| `stream_tokens` | Same prepare path as graph, then `model.astream` |
 
-Streaming **does not** use the compiled graph’s `generate` node; it reuses `prepare_node` + `knowledge_node` so context matches non-stream, then streams tokens directly.
+Streaming reuses the same prepare/context/tools-or-agent-or-knowledge path as non-stream, then streams tokens directly (not the compiled `generate` node).
 
 ---
 
@@ -292,13 +345,15 @@ Streaming **does not** use the compiled graph’s `generate` node; it reuses `pr
 |---|---|
 | `input_messages` | Raw role/content from HTTP |
 | `dialog` | Short-term user/assistant turns (checkpointed) |
-| `messages` | Ephemeral prompt for this turn (identity + knowledge + dialog) |
-| `sources_used` | Audit tags (`identity`, `memory`, `knowledge`, `llm`, …) |
+| `messages` | Ephemeral prompt for this turn (identity + context + tools/knowledge + dialog) |
+| `sources_used` | Audit tags (`identity`, `memory`, `context`, `tools`, `knowledge`, `llm`, …) |
 | `conversation_id` / `user_id` | Thread key for MemorySaver (`user_id:conversation_id`) |
 | `identity_version` | Bumped with persona changes |
 | `knowledge_packs` | Pack ids injected this turn |
 | `memory_turns` | Length of `dialog` after merge/append |
 | `model_name` | From generate |
+| `ui_context` | Phase 3 structured page/entity/role |
+| `tool_name` / tool meta | Phase 4 last tool call audit |
 
 #### `app/graphs/memory.py`
 In-process LangGraph `MemorySaver` helpers: thread ids, dialog merge/trim, enable flag
@@ -309,25 +364,60 @@ across replicas (swap checkpointer for Postgres/Redis later if needed).
 Builds and compiles:
 
 ```text
-START → prepare → knowledge → generate → END
+START → prepare → context → tools|agent|knowledge → generate → END
 ```
+
+Conditional after `context`: `runtime_mode` is `knowledge` | `workflow` | `agent`. Workflow is one tool; agent is a bounded multi-tool loop.
 
 `get_que_graph()` is process-cached (`@lru_cache`) and compiled **with** `MemorySaver` when
 memory is enabled. Pass `config={"configurable": {"thread_id": ...}}` so `dialog` persists.
 
 #### `app/graphs/nodes.py`
-Three nodes (one job each):
+Nodes (one job each):
 
 1. **`prepare_node`** (sync)  
    Merge checkpoint `dialog` with incoming turn → build prompt from memory → prepend identity.
 
-2. **`knowledge_node`** (sync)  
-   `select_knowledge(input_messages)` → insert knowledge as a second system message (right after identity) → record pack ids.
+2. **`context_node`** (sync)  
+   If `ui_context` present → insert labeled `QUIZZER_UI_CONTEXT` system message.
 
-3. **`generate_node`** (async)  
-   `get_chat_model().ainvoke(messages)` → append `AIMessage` to `dialog` + prompt → record model name.
+3. **`tools_node`** (async, Phase 4)  
+   Deterministic select → execute via Quizzer internal API → inject labeled `TOOL_RESULT` (or clarify / soft-fail).
 
-Reserved for later (comments in file): `context_node` (UI/role context), `tools_node` (authorized Quizzer API tools).
+4. **`knowledge_node`** (sync)  
+   Dense RAG (+ keyword fallback) → insert knowledge system message → record pack ids.
+
+5. **`generate_node`** (async)  
+   Budget gate → `ainvoke_chat(...)` → append `AIMessage` to `dialog` + prompt → record the lane's `model`. Capacity reply if the turn token/call/USD budget would be exceeded.
+
+---
+
+### Observability — `app/obs/` (Phase 12)
+
+| Module | Role |
+|---|---|
+| `trace.py` | `TurnTrace` spans; hashed `user_id` |
+| `metrics.py` | In-process ring, P50/P95/P99, `que_alert` windows |
+| `cost.py` | Token usage extract + static USD table |
+| `budget.py` | Skip LLM when turn/user caps trip |
+| `context.py` | Bind `request_id` + current trace |
+
+Failure matrix (Phase 13): [`docs/FAILURE_MATRIX.md`](docs/FAILURE_MATRIX.md).
+
+---
+
+### Tools — `app/tools/` (Phase 4)
+
+| Module | Role |
+|---|---|
+| `registry.py` | Read-only insight tool specs (including title lookup) |
+| `select.py` | Deterministic keyword + page selector (not LLM tool-calling) |
+| `executor.py` | Timeout, MAX_TOOL_CALLS, circuit, kill switch |
+| `quizzer_client.py` | HTTP to Quizzer `/internal/que/v1/tools` |
+
+Eval gate: selection accuracy ≥ 85% (`scripts/run_tool_eval.py`).
+
+Phase 7: `exclude_tools` on the selector; `invoke_tool_selection` for a single HTTP call; `QUE_TOOL_MAX_CALLS` enforced.
 
 ---
 
@@ -337,7 +427,7 @@ Reserved for later (comments in file): `context_node` (UI/role context), `tools_
 Thin persona — **not** product docs:
 
 - `IDENTITY_VERSION` — bump when identity text changes meaningfully
-- `build_system_prompt()` — short rules: who QUE is, use packs privately, plain text, no live-account claims
+- `build_system_prompt()` — short rules: who QUE is, use packs privately, plain text, ground on TOOL_RESULT when present
 - `identity_metadata()` — `{ name, product, identity_version, phase }` for clients/logs
 
 #### `app/identity/__init__.py`
@@ -348,15 +438,15 @@ Re-exports persona helpers.
 ### Knowledge selection — `app/knowledge/`
 
 #### `app/knowledge/retrieve.py`
-Runtime selection over markdown under `/knowledge` (no embeddings):
+Runtime selection: **hybrid** (dense + BM25 RRF) when `QUE_RAG_HYBRID` and
+`bm25_corpus.json` exist; else dense Chroma; else keyword fallback on `manifest.json`.
+CORE always injected; below `QUE_RAG_MIN_SCORE` → honest no-answer (dense-gated).
 
-1. Load `manifest.json` (cached)
-2. Always include docs with `"always": true` (`CORE.md`)
-3. Score guides by keyword hits on the **latest user message**
-4. Take top `max_guides` (default 2)
-5. If query has no hits → fallback to `lifecycle` guide
-6. Cap total injected chars (~12k)
-7. Prefix with “PRIVATE REFERENCE…” instructions
+#### `app/knowledge/hybrid.py` / `sparse.py` / `assemble.py`
+Phase 6 — BM25 sidecar, reciprocal rank fusion, shared CORE+chunk assembly.
+
+#### `app/knowledge/dense.py` / `ingest.py` / `store.py`
+Phase 2 — embed, Chroma upsert/query; ingest also writes `bm25_corpus.json`.
 
 #### `app/knowledge/__init__.py`
 Exports `select_knowledge`, `KnowledgeSelection`, `clear_knowledge_caches`.
@@ -396,7 +486,7 @@ Live counts (“how many students…”) must wait for future tools — guides m
 | `tests/test_pipeline.py` | prepare/complete/stream wiring |
 | `tests/test_knowledge.py` | Keyword selection, CORE always-on, caches |
 
-Tests avoid live LLM calls where possible; CI runs with empty `LLM_API_KEY`.
+Tests avoid live LLM calls where possible; CI runs with empty `LLM_API_KEY` / `LLM_API_KEY_N`.
 
 ---
 
@@ -424,17 +514,19 @@ Tests avoid live LLM calls where possible; CI runs with empty `LLM_API_KEY`.
 | Quizzer Backend → mint Que token | `POST /que/session` + shared `QUE_JWT_SECRET` |
 | Browser → QUE chat | `Authorization: Bearer <que_access>` + CORS origins |
 | Server/ops → QUE | `X-Que-Service-Key` |
+| QUE → Quizzer tools | `X-Que-Service-Key` + `X-Que-User-Id` → `/internal/que/v1/tools` |
 | Local docs without key | `ALLOW_INSECURE_LOCAL_NO_AUTH=true` + local env only |
-| LLM | `LLM_API_KEY` + OpenAI-compatible `LLM_BASE_URL` |
+| LLM | `LLM_API_KEY` / `LLM_API_KEY_N` + OpenAI-compatible `LLM_BASE_URL`; chat pool `LLM_MODELS` |
+| Insight tools kill switch | `QUE_TOOLS_ENABLED` + `QUIZZER_INTERNAL_BASE_URL` |
 
 ---
 
 ## What is intentionally out of scope (for now)
 
-- Quizzer DB / ORM imports
+- Quizzer DB / ORM imports inside QUE
 - Durable multi-worker conversation store (current MemorySaver is in-process / per worker)
-- Embeddings / vector RAG
-- Tools that read live exam/student numbers or mutate Quizzer
+- Write / mutate Quizzer tools (V1 is read-only insight only)
+- LLM ReAct / planning loops / multi-agent (Phase 17)
 - Proxying chat/SSE through Quizzer Backend (avoided on purpose)
 
 Those land later as new graph nodes / tools, without collapsing identity and knowledge into one blob.
@@ -443,4 +535,4 @@ Those land later as new graph nodes / tools, without collapsing identity and kno
 
 ## Mental model (one sentence)
 
-**Quizzer proves the user once and mints a Que JWT; the browser streams chat straight to QUE; each turn runs LangGraph with short-term `dialog` memory (same `conversation_id`), injects persona + keyword knowledge, and asks the LLM for a plain-text answer.**
+**Quizzer proves the user once and mints a Que JWT; the browser streams chat straight to QUE; each turn runs LangGraph with short-term `dialog` memory, injects persona + UI context + either insight TOOL_RESULT (workflow or bounded agent loop) or RAG packs, and asks the LLM for a plain-text answer.**
