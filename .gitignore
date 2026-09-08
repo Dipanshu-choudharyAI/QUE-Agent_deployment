@@ -52,3 +52,6 @@ AGENTS.local.md
 
 # knowledge/ is tracked — required at runtime and in the Docker image.
 # Edit packs in-repo and redeploy to ship updates to users.
+
+# Local Chroma vector index (built via: uv run python -m app.knowledge)
+data/
