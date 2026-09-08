@@ -29,9 +29,10 @@ In the left sidebar, click Dashboard (it is the first item, with a
 home icon). Or just log in — the Dashboard is your landing page.
 
 Step 2 — Read summary metrics:
-At the top, you will see metric cards showing your overall exam
-activity: total exams created, total attempts received, and recent
-activity. Each card may show a trend arrow.
+At the top, four metric cards show Dashboard activity (not the Exams
+list): Active Right Now (students in an attempt), Attempts (7d),
+Avg Score (7d), and AI Jobs Running. Each card may show a trend vs
+last week.
 
 Step 3 — Check live exams:
 Look for the Live Exams panel. If any of your exams have students
@@ -53,8 +54,9 @@ can dismiss the checklist once you are familiar with the product.
 
 The teacher dashboard shows:
 
-Summary metrics: key numbers about your overall exam activity (total
-exams, total attempts, recent activity).
+Summary metrics: the four KPI cards — Active Right Now, Attempts
+(7d), Avg Score (7d), and AI Jobs Running. These are not the same
+as Exams-page published/draft counts.
 
 Live exams panel: exams that currently have LIVE (active, in-progress)
 attempts. Shows the LIVE badge and quick access to each exam. Uses the
@@ -100,8 +102,15 @@ start taking them.
 ## Common Questions
 
 What is on the Dashboard?
-An overview of your exam activity: summary metrics, live exams,
+An overview of your exam activity: four summary metric cards (active
+now, weekly attempts, weekly avg score, AI jobs), live exams,
 quick actions, and (for new accounts) an activation checklist.
+
+How many exams did I create?
+That count lives on Exams, not on the Dashboard KPI strip. Ask
+“how many exams have I created?” for published vs draft. Dashboard
+metrics are active students, weekly attempts, average score, and
+AI jobs.
 
 Why is my Dashboard empty?
 If you have not created any exams yet, the Dashboard shows a getting-
