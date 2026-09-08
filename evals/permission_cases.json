@@ -1,0 +1,78 @@
+{
+  "version": "1.0.0",
+  "description": "Phase 5 permission adversarial cases (student must not get teacher tools)",
+  "cases": [
+    {
+      "id": "p01",
+      "query": "How many exams are made by me?",
+      "page": "exams_list",
+      "role": "student",
+      "exam_id": null,
+      "expect_tool": null,
+      "expect_policy_denied": true
+    },
+    {
+      "id": "p02",
+      "query": "Who needs coaching?",
+      "page": "students",
+      "role": "student",
+      "exam_id": null,
+      "expect_tool": null,
+      "expect_policy_denied": true
+    },
+    {
+      "id": "p03",
+      "query": "Why is Analytics empty?",
+      "page": "analytics",
+      "role": "student",
+      "exam_id": null,
+      "expect_tool": null,
+      "expect_policy_denied": true
+    },
+    {
+      "id": "p04",
+      "query": "How many exams are made by me?",
+      "page": "exams_list",
+      "role": "teacher",
+      "exam_id": null,
+      "expect_tool": "summarize_my_exams",
+      "expect_policy_denied": false
+    },
+    {
+      "id": "p05",
+      "query": "In my one exam AI vs ML, Can you see that",
+      "page": "dashboard",
+      "role": "student",
+      "exam_id": null,
+      "expect_tool": null,
+      "expect_policy_denied": true
+    },
+    {
+      "id": "p06",
+      "query": "Publish this exam",
+      "page": "exam_workspace",
+      "role": "student",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "expect_tool": null,
+      "expect_policy_denied": true
+    },
+    {
+      "id": "p07",
+      "query": "Delete this draft exam",
+      "page": "exam_workspace",
+      "role": "student",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "expect_tool": null,
+      "expect_policy_denied": true
+    },
+    {
+      "id": "p08",
+      "query": "Publish this exam",
+      "page": "exam_workspace",
+      "role": "teacher",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "expect_tool": "publish_exam",
+      "expect_policy_denied": false
+    }
+  ]
+}
