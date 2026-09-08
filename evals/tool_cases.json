@@ -1,0 +1,30 @@
+{
+  "version": "1.0.0",
+  "description": "Phase 4 insight tool selection golden cases",
+  "cases": [
+    {"id": "t01", "query": "How did this exam go?", "page": "exam_results", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "summarize_exam_results"},
+    {"id": "t02", "query": "Who should I follow up with?", "page": "exam_results", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "coach_students_needing_help"},
+    {"id": "t03", "query": "Why can't I publish?", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "diagnose_publish_blockers"},
+    {"id": "t04", "query": "How do I make this exam better?", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "recommend_exam_improvements"},
+    {"id": "t05", "query": "Why is Analytics empty?", "page": "analytics", "exam_id": null, "expected_tool": "diagnose_empty_analytics"},
+    {"id": "t06", "query": "Where did I leave off creating?", "page": "create_exam", "exam_id": null, "expected_tool": "resume_creation_guidance"},
+    {"id": "t07", "query": "Explain this exam status", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "explain_exam_status"},
+    {"id": "t08", "query": "What's in this exam blueprint?", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "summarize_exam_blueprint"},
+    {"id": "t09", "query": "How do I reduce cheating on this?", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "recommend_integrity_settings"},
+    {"id": "t10", "query": "What should I do after these results?", "page": "exam_results", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "recommend_post_exam_actions"},
+    {"id": "t11", "query": "Is the live exam OK?", "page": "monitoring", "exam_id": null, "expected_tool": "summarize_live_exam_health"},
+    {"id": "t12", "query": "Who needs coaching?", "page": "students", "exam_id": null, "expected_tool": "prioritize_student_coaching"},
+    {"id": "t13", "query": "Which Arena questions are weak?", "page": "arena", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "analyze_arena_weak_questions"},
+    {"id": "t14", "query": "Where am I with this exam?", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "explain_exam_status"},
+    {"id": "t15", "query": "Summarize results for this quiz", "page": "exam_results", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "summarize_exam_results"},
+    {"id": "t16", "query": "How many exams are made by me?", "page": "exams_list", "exam_id": null, "expected_tool": "summarize_my_exams"},
+    {"id": "t17", "query": "I want to ask about my metrics numbers of my Dashbaord", "page": "arena", "exam_id": null, "expected_tool": "summarize_dashboard_metrics"},
+    {"id": "t18", "query": "In my one exam AI vs ML, Can you see that", "page": "dashboard", "exam_id": null, "expected_tool": "lookup_my_exam"},
+    {"id": "t19", "query": "Did you see one exam maded by me ,AI vs ML", "page": "dashboard", "exam_id": null, "expected_tool": "lookup_my_exam"},
+    {"id": "t20", "query": "Publish this exam", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "publish_exam"},
+    {"id": "t21", "query": "How do I publish this exam?", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "explain_exam_status"},
+    {"id": "t22", "query": "Send a reminder to students for this exam", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "notify_students"},
+    {"id": "t23", "query": "Delete this draft exam", "page": "exam_workspace", "exam_id": "11111111-1111-1111-1111-111111111111", "expected_tool": "delete_draft_exam"},
+    {"id": "t24", "query": "Is the live exam OK on Monitoring?", "page": "monitoring", "exam_id": null, "expected_tool": "summarize_live_exam_health"}
+  ]
+}
