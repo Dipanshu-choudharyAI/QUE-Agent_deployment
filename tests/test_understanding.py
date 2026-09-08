@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.orchestration.understanding import OUT_OF_SCOPE_REFUSAL, classify_request
+from app.orchestration.understanding import OUT_OF_SCOPE_REFUSAL, classify_request, is_multi_step_ask
 
 
 def test_knowledge_howto():
@@ -30,6 +30,12 @@ def test_live_data_routes_to_tool():
     assert u.scope == "in_scope"
     assert u.route == "tool"
     assert u.data_need == "live_tool"
+
+
+def test_multi_step_compare_and_join():
+    assert is_multi_step_ask("compare this exam to last month") is True
+    assert is_multi_step_ask("How many exams are made by me and how did this exam go?") is True
+    assert is_multi_step_ask("How many exams are made by me?") is False
 
 
 def test_greeting_canned_eligible():
@@ -68,6 +74,44 @@ def test_how_does_feature_work_pattern():
     u = classify_request("How does live monitoring work?")
     assert u.scope == "in_scope"
     assert u.route == "knowledge"
+
+
+def test_ask_about_dashboard_from_any_page():
+    """Being on Arena (or anywhere) must not lock QUE to that page."""
+    u = classify_request("I want to ask about my Dashboard")
+    assert u.scope == "in_scope"
+    assert u.route != "refuse"
+
+
+def test_ask_about_dashboard_typo_still_in_scope():
+    u = classify_request("I want to ask about my Dashbaord")
+    assert u.scope == "in_scope"
+    assert u.route != "refuse"
+
+
+def test_dashboard_metrics_typo_is_in_scope():
+    u = classify_request("I want to ask about my metrics numbers of my Dashbaord")
+    assert u.scope == "in_scope"
+    assert u.route != "refuse"
+
+
+def test_metrics_alone_is_in_scope():
+    u = classify_request("I want to ask about my metrics")
+    assert u.scope == "in_scope"
+    assert u.route != "refuse"
+
+
+def test_see_named_exam_routes_to_tool():
+    u = classify_request("In my one exam AI vs ML, Can you see that")
+    assert u.scope == "in_scope"
+    assert u.route == "tool"
+    assert u.data_need == "live_tool"
+
+
+def test_exam_titled_routes_to_tool():
+    u = classify_request("Can you see my exam titled AI vs ML?")
+    assert u.scope == "in_scope"
+    assert u.route == "tool"
 
 
 def test_refusal_copy_is_short():
