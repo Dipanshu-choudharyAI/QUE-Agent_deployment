@@ -1,0 +1,62 @@
+{
+  "version": "1.0.0",
+  "description": "Phase 7 workflow-vs-agent routing golden cases",
+  "cases": [
+    {
+      "id": "a01",
+      "query": "How many exams are made by me?",
+      "page": "exams_list",
+      "exam_id": null,
+      "role": "teacher",
+      "expected_mode": "workflow"
+    },
+    {
+      "id": "a02",
+      "query": "How many exams are made by me and how did this exam go?",
+      "page": "exam_results",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "role": "teacher",
+      "expected_mode": "agent"
+    },
+    {
+      "id": "a03",
+      "query": "How do I publish an exam?",
+      "page": "dashboard",
+      "exam_id": null,
+      "role": "teacher",
+      "expected_mode": "knowledge"
+    },
+    {
+      "id": "a04",
+      "query": "How many exams are made by me and how did this exam go?",
+      "page": "exam_results",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "role": "student",
+      "expected_mode": "knowledge"
+    },
+    {
+      "id": "a05",
+      "query": "Compare how many exams I created and how this exam went",
+      "page": "exam_results",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "role": "teacher",
+      "expected_mode": "agent"
+    },
+    {
+      "id": "a06",
+      "query": "Why can't I publish?",
+      "page": "exam_workspace",
+      "exam_id": "11111111-1111-1111-1111-111111111111",
+      "role": "teacher",
+      "expected_mode": "workflow"
+    },
+    {
+      "id": "a07",
+      "query": "Hello",
+      "page": "dashboard",
+      "exam_id": null,
+      "role": "teacher",
+      "expected_mode": "knowledge"
+    }
+  ]
+}
