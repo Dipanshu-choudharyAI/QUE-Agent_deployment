@@ -6,6 +6,7 @@ runs Request Understanding (Phase 1), and exposes complete / stream helpers.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -15,12 +16,14 @@ import structlog
 from langchain_core.messages import AIMessage, BaseMessage
 
 from app.core.config import Settings, get_settings
-from app.core.llm import LLMError
+from app.core.config import get_settings as _get_settings_for_tools
+from app.core.llm import LLMError, astream_chat, last_llm_usage
 from app.core.que_cache import (
     cache_key,
     get_cached_llm_reply,
     set_cached_llm_reply,
 )
+from app.evals.online import maybe_log_online_turn
 from app.graphs.memory import (
     append_assistant,
     make_thread_id,
@@ -29,22 +32,131 @@ from app.graphs.memory import (
     merge_dialog_with_incoming,
     runnable_config,
 )
-from app.graphs.nodes import knowledge_node, prepare_node
+from app.graphs.nodes import (
+    agent_node,
+    apply_agent_loop_result,
+    context_node,
+    knowledge_node,
+    prepare_node,
+    tools_node,
+)
 from app.graphs.que_graph import get_que_graph
 from app.graphs.state import QueGraphState
+from app.guardrails import INPUT_REFUSAL
+from app.guardrails.input import scan_user_text
+from app.guardrails.output import apply_output_guardrail, grounding_from_messages
 from app.identity import identity_metadata
+from app.obs.budget import (
+    CAPACITY_REPLY,
+    allow_llm_call,
+    finish_turn_budget,
+    note_llm_usage,
+    start_turn_budget,
+    user_hour_exceeded,
+)
+from app.obs.context import bind_trace, clear_trace
+from app.obs.cost import usd_for_usage
+from app.obs.metrics import record_turn
+from app.obs.trace import TurnTrace, hash_user_id, new_trace
+from app.orchestration.cache_policy import allow_llm_reply_cache, allow_retrieval_cache
 from app.orchestration.canned import latest_user_text, match_canned_reply
 from app.orchestration.history import sanitize_history
-from app.orchestration.resolve import ResolvedRequest, resolve_request
+from app.orchestration.pending_actions import clear_pending, get_pending, is_affirmative_reply, is_negative_reply
+from app.orchestration.resolve import (
+    ResolvedRequest,
+    is_conversation_meta,
+    resolve_request,
+)
+from app.orchestration.ui_context import live_data_reply_with_context
 from app.orchestration.understanding import (
     OUT_OF_SCOPE_REFUSAL,
     RequestUnderstanding,
+    _has_quizzer_hint,
     classify_request,
     is_hard_out_of_scope,
 )
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse
 
 logger = structlog.get_logger(__name__)
+
+
+def _maybe_online(
+    *,
+    decision: TurnDecision,
+    request: ChatRequest,
+    model: str | None = None,
+    cache_hit: bool = False,
+    cache_layer: str | None = None,
+    guardrail: str | None = None,
+    settings: Settings | None = None,
+) -> None:
+    g = guardrail or decision.guardrail
+    if not g and (model or "").startswith("guardrail:"):
+        g = (model or "").split(":", 1)[-1]
+    maybe_log_online_turn(
+        request_id=decision.request_id,
+        user_id=request.user_id,
+        query=decision.resolution.resolved_query or latest_user_text(request.messages),
+        route=decision.understanding.route,
+        freshness=decision.understanding.freshness,
+        cache_hit=cache_hit,
+        cache_layer=cache_layer,
+        guardrail=g,
+        model=model,
+        settings=settings,
+    )
+
+
+def _begin_obs(decision: TurnDecision, request: ChatRequest) -> TurnTrace:
+    start_turn_budget(request_id=decision.request_id, user_id=request.user_id)
+    trace = new_trace(
+        request_id=decision.request_id,
+        user_id=request.user_id,
+        route=decision.understanding.route,
+        freshness=decision.understanding.freshness,
+    )
+    bind_trace(trace)
+    return trace
+
+
+def _end_obs(
+    trace: TurnTrace,
+    *,
+    started: float,
+    error: bool = False,
+    model: str | None = None,
+    settings: Settings | None = None,
+) -> None:
+    trace.error = error
+    if model:
+        trace.model = str(model)
+    usage = last_llm_usage()
+    if usage.total and not trace.prompt_tokens and not trace.completion_tokens:
+        trace.prompt_tokens = usage.prompt_tokens
+        trace.completion_tokens = usage.completion_tokens
+        usd = usd_for_usage(usage)
+        if usd is not None:
+            trace.cost_usd = usd
+        elif ":free" in (trace.model or "").casefold():
+            trace.cost_usd = 0.0
+    if trace.cost_usd is None and not trace.prompt_tokens:
+        trace.cost_usd = 0.0
+    record_turn(trace, latency_ms=(time.perf_counter() - started) * 1000.0, settings=settings)
+    finish_turn_budget(trace.request_id)
+    clear_trace()
+
+
+def _capacity_response(
+    request: ChatRequest,
+    decision: TurnDecision,
+    *,
+    model: str,
+) -> ChatResponse:
+    return ChatResponse(
+        message=ChatMessage(role="assistant", content=CAPACITY_REPLY),
+        conversation_id=request.conversation_id,
+        model=model,
+    )
 
 TOOL_NOT_READY_REPLY = (
     "I can't read live Quizzer account or exam numbers yet. "
@@ -60,17 +172,48 @@ def _prepare_with_knowledge(
     *,
     dialog: list | None = None,
     resolution: ResolvedRequest | None = None,
+    understanding: RequestUnderstanding | None = None,
 ) -> dict:
-    """Same prepare → knowledge path as the compiled graph (for streaming)."""
-    initial = _request_to_input(request, resolution=resolution)
+    """Sync prepare → context → knowledge (tests / non-tool path)."""
+    initial = _request_to_input(request, resolution=resolution, understanding=understanding)
     if dialog is not None:
         initial["dialog"] = dialog
     state = prepare_node(initial)
-    state = {
-        **initial,
-        **state,
-    }
+    state = {**initial, **state}
+    state = {**state, **context_node(state)}
     return knowledge_node(state)
+
+
+async def _prepare_turn_async(
+    request: ChatRequest,
+    *,
+    dialog: list | None = None,
+    resolution: ResolvedRequest | None = None,
+    understanding: RequestUnderstanding | None = None,
+) -> dict:
+    initial = _request_to_input(request, resolution=resolution, understanding=understanding)
+    if dialog is not None:
+        initial["dialog"] = dialog
+    state = prepare_node(initial)
+    state = {**initial, **state}
+    state = {**state, **context_node(state)}
+    mode = (state.get("runtime_mode") or "knowledge").strip()
+    if mode == "agent":
+        return {**state, **(await agent_node(state))}
+    if mode == "workflow":
+        state = {**state, **(await tools_node(state))}
+        return state
+    return knowledge_node(state)
+
+
+def _tools_route_decision(state: dict) -> tuple[bool, object | None]:
+    """Return (use_tools, ToolSelection|None) without executing."""
+    from app.orchestration.runtime_mode import decide_runtime_mode_from_state
+
+    mode, _reason, sel = decide_runtime_mode_from_state(state)
+    if mode in {"workflow", "agent"}:
+        return True, sel
+    return False, sel
 
 
 def _thread_config(request: ChatRequest) -> tuple[str | None, dict | None]:
@@ -140,12 +283,15 @@ class TurnDecision:
     resolution: ResolvedRequest
     early_reply: str | None = None
     early_model: str | None = None
+    guardrail: str | None = None
 
 
 def _request_to_input(
     request: ChatRequest,
     *,
     resolution: ResolvedRequest | None = None,
+    understanding: RequestUnderstanding | None = None,
+    request_id: str | None = None,
 ) -> QueGraphState:
     payload: QueGraphState = {
         "input_messages": [{"role": m.role, "content": m.content} for m in request.messages],
@@ -154,6 +300,10 @@ def _request_to_input(
         "conversation_id": request.conversation_id,
         "user_id": request.user_id,
     }
+    if request_id:
+        payload["request_id"] = request_id
+    if request.context is not None:
+        payload["ui_context"] = request.context.model_dump(exclude_none=True)
     if resolution is not None:
         payload["raw_user_message"] = resolution.raw_message
         payload["resolved_query"] = resolution.resolved_query
@@ -163,6 +313,11 @@ def _request_to_input(
         payload["intent"] = resolution.intent
         payload["response_mode"] = resolution.response_mode
         payload["retrieval_query"] = resolution.resolved_query
+    if understanding is not None:
+        payload["understanding_route"] = understanding.route
+        payload["data_need"] = understanding.data_need
+        payload["understanding_complexity"] = understanding.complexity
+        payload["understanding_freshness"] = understanding.freshness
     return payload
 
 
@@ -178,16 +333,14 @@ def _log_request_trace(
         "que_request_trace",
         request_id=request_id,
         conversation_id=request.conversation_id,
-        raw_user_message=resolution.raw_message,
+        user_hash=hash_user_id(request.user_id),
         previous_context_available=bool(resolution.prior_user_message),
-        resolved_query=resolution.resolved_query,
         is_follow_up=resolution.is_follow_up,
         topic=resolution.topic,
         resolve_intent=resolution.intent,
         response_mode=resolution.response_mode,
         scope_decision=understanding.scope,
         route=understanding.route,
-        retrieval_query=resolution.resolved_query,
         resolve_reasons=list(resolution.reasons),
         knowledge_packs=knowledge_packs or [],
         understanding_intent=understanding.intent,
@@ -196,6 +349,8 @@ def _log_request_trace(
         understanding_data_need=understanding.data_need,
         understanding_complexity=understanding.complexity,
         understanding_reasons=list(understanding.reasons),
+        ui_page=(request.context.current_page if request.context else None),
+        ui_role=(request.context.user_role if request.context else None),
     )
 
 
@@ -216,7 +371,7 @@ def _lc_to_schema(messages: list[BaseMessage]) -> list[ChatMessage]:
 
 
 def prepare_turn(request: ChatRequest) -> PreparedTurn:
-    """Run prepare → knowledge (no LLM) — identity + product packs."""
+    """Run prepare → context → knowledge (no LLM) — identity + UI + product packs."""
     partial = _prepare_with_knowledge(request)
     return PreparedTurn(
         messages=_lc_to_schema(partial["messages"]),
@@ -235,13 +390,13 @@ def _assistant_text(messages: list[BaseMessage]) -> str:
 
 
 def _history_fingerprint(request: ChatRequest) -> str:
-    """Stable key for LLM reply cache — sanitized role/content turns only."""
+    """Stable key for LLM reply cache — always scoped by user identity."""
     cleaned = sanitize_history(list(request.messages))
     parts = [f"{m.role}:{m.content.strip()}" for m in cleaned]
     if request.conversation_id:
         parts.insert(0, f"cid:{request.conversation_id.strip()}")
-    if request.user_id:
-        parts.insert(0, f"uid:{request.user_id.strip()}")
+    uid = (request.user_id or "").strip() or "anon"
+    parts.insert(0, f"uid:{uid}")
     return cache_key("hist", *parts)
 
 
@@ -251,11 +406,63 @@ def _chunk_text(text: str, size: int = 28) -> list[str]:
     return [text[i : i + size] for i in range(0, len(text), size)]
 
 
+def _guardrail_understanding(reason: str) -> RequestUnderstanding:
+    return RequestUnderstanding(
+        scope="out_of_scope",
+        intent="out_of_scope",
+        risk="read",
+        freshness="static",
+        data_need="none",
+        complexity="single_step",
+        route="refuse",
+        reasons=(reason,),
+    )
+
+
+def _apply_output_guard(
+    text: str,
+    *,
+    request: ChatRequest,
+    messages: list | None,
+) -> tuple[str, str | None]:
+    """Return (safe_text, model_override). model_override is guardrail:output on hit."""
+    ui = request.context.model_dump(exclude_none=True) if request.context else {}
+    blob = grounding_from_messages(messages or [])
+    safe, hit = apply_output_guardrail(
+        text,
+        user_text=latest_user_text(request.messages),
+        role=(ui or {}).get("user_role"),
+        tool_blob=blob or None,
+        ui_blob=blob or None,
+    )
+    if hit is None:
+        return text, None
+    return safe, "guardrail:output"
+
+
 def decide_turn(request: ChatRequest) -> TurnDecision:
     """Resolve follow-ups, then classify with conversation-aware scope."""
     request_id = uuid.uuid4().hex[:12]
     user_text = latest_user_text(request.messages)
     resolution = resolve_request(list(request.messages))
+
+    input_hit = scan_user_text(user_text)
+    if input_hit is not None:
+        understanding = _guardrail_understanding("guardrail:input")
+        _log_request_trace(
+            request_id=request_id,
+            request=request,
+            resolution=resolution,
+            understanding=understanding,
+        )
+        return TurnDecision(
+            request_id=request_id,
+            understanding=understanding,
+            resolution=resolution,
+            early_reply=INPUT_REFUSAL,
+            early_model="guardrail:input",
+            guardrail="input",
+        )
 
     # Hard out-of-scope on the *raw* utterance always wins (weather, jokes, …),
     # even mid-conversation — do not let follow-up rewriting soften that.
@@ -277,9 +484,14 @@ def decide_turn(request: ChatRequest) -> TurnDecision:
 
     # Warm social / FAQ replies before product scope. Keeps hello / I'm fine /
     # bye interactive without treating them as out-of-scope.
-    canned = match_canned_reply(
-        user_text,
-        conversation_id=request.conversation_id,
+    # Chat-history asks ("what was my first question?") must not hit canned FAQ.
+    canned = (
+        None
+        if is_conversation_meta(user_text)
+        else match_canned_reply(
+            user_text,
+            conversation_id=request.conversation_id,
+        )
     )
     if canned is not None:
         understanding = classify_request(
@@ -318,20 +530,11 @@ def decide_turn(request: ChatRequest) -> TurnDecision:
     conversation_active = bool(
         resolution.is_follow_up
         or resolution.topic
+        or resolution.thread_active
+        or is_conversation_meta(user_text)
         or (
             resolution.prior_user_message
-            and any(
-                h in (resolution.prior_user_message or "").casefold()
-                for h in (
-                    "quiz",
-                    "exam",
-                    "integrat",
-                    "calendar",
-                    "classroom",
-                    "publish",
-                    "arena",
-                )
-            )
+            and _has_quizzer_hint(resolution.prior_user_message)
         )
     )
     understanding = classify_request(
@@ -365,20 +568,73 @@ def decide_turn(request: ChatRequest) -> TurnDecision:
         )
 
     if understanding.route == "tool":
-        # Phase 4 will execute tools; until then never invent live numbers.
-        return TurnDecision(
-            request_id=request_id,
-            understanding=understanding,
-            resolution=resolution,
-            early_reply=TOOL_NOT_READY_REPLY,
-            early_model="route:tool_pending",
-        )
+        cfg = _get_settings_for_tools()
+        # When tools are enabled, continue into the graph (insight workflows).
+        if not cfg.que_tools_enabled or not (cfg.quizzer_internal_base_url or "").strip():
+            ui = request.context.model_dump(exclude_none=True) if request.context else None
+            return TurnDecision(
+                request_id=request_id,
+                understanding=understanding,
+                resolution=resolution,
+                early_reply=live_data_reply_with_context(ui) if ui else TOOL_NOT_READY_REPLY,
+                early_model="route:tool_pending",
+            )
 
     return TurnDecision(
         request_id=request_id,
         understanding=understanding,
         resolution=resolution,
     )
+
+
+async def resolve_write_confirmation(
+    decision: TurnDecision,
+    request: ChatRequest,
+    settings: Settings | None = None,
+) -> TurnDecision:
+    """Detect a yes/no reply to a pending write-tool confirmation.
+
+    Runs after ``decide_turn`` for every turn (cheap dict lookup when there is
+    no pending action). This is the *only* place a write tool is ever actually
+    executed — deterministic, outside the LLM/graph, so a mutation's outcome
+    is never left to model fidelity. Overrides whatever ``decide_turn`` picked
+    (canned/guardrail/etc.) when a pending confirmation matches, since a
+    publish/notify/delete confirmation is more specific than generic chitchat.
+    """
+    thread_key = make_thread_id(request.conversation_id, request.user_id)
+    pending = get_pending(thread_key)
+    if pending is None:
+        return decision
+
+    text = latest_user_text(request.messages)
+    if is_affirmative_reply(text):
+        clear_pending(thread_key)
+        from app.tools.executor import execute_confirmed_write_action
+
+        execution = await execute_confirmed_write_action(
+            pending, request_id=decision.request_id, settings=settings
+        )
+        reply = execution.final_reply or "Something went wrong. Nothing was changed."
+        logger.info(
+            "que_write_action_resolved",
+            request_id=decision.request_id,
+            tool=pending.tool_name,
+            ok=execution.error_code is None,
+        )
+        return dataclasses.replace(decision, early_reply=reply, early_model="tool:write_confirm")
+
+    if is_negative_reply(text):
+        clear_pending(thread_key)
+        return dataclasses.replace(
+            decision,
+            early_reply="Cancelled — nothing was changed.",
+            early_model="tool:write_cancel",
+        )
+
+    # Anything else: fail safe. Don't carry a stale confirmation forward onto
+    # an unrelated message — drop it and process this turn normally.
+    clear_pending(thread_key)
+    return decision
 
 
 def _log_turn(
@@ -389,6 +645,7 @@ def _log_turn(
     latency_ms: float,
     model: str | None = None,
     cache_hit: bool = False,
+    cache_layer: str | None = None,
     error: str | None = None,
     knowledge_packs: list[str] | None = None,
     knowledge_scores: dict[str, int] | None = None,
@@ -398,15 +655,15 @@ def _log_turn(
         event,
         request_id=decision.request_id,
         conversation_id=request.conversation_id,
-        user_id=request.user_id,
+        user_hash=hash_user_id(request.user_id),
         latency_ms=round(latency_ms, 2),
         model=model,
         cache_hit=cache_hit,
+        cache_layer=cache_layer,
         error=error,
         knowledge_packs=knowledge_packs or [],
         knowledge_scores=knowledge_scores or {},
         knowledge_truncated=knowledge_truncated,
-        resolved_query=decision.resolution.resolved_query,
         is_follow_up=decision.resolution.is_follow_up,
         response_mode=decision.resolution.response_mode,
         topic=decision.resolution.topic,
@@ -418,8 +675,15 @@ def _log_turn(
 async def complete(request: ChatRequest, *, settings: Settings | None = None) -> ChatResponse:
     cfg = settings or get_settings()
     started = time.perf_counter()
+    t_decide = time.perf_counter()
     decision = decide_turn(request)
+    decision = await resolve_write_confirmation(decision, request, settings=cfg)
+    decide_ms = (time.perf_counter() - t_decide) * 1000.0
     thread_id, mem_config = _thread_config(request)
+    trace = _begin_obs(decision, request)
+    trace.add_span("decide", decide_ms, extra={"route": decision.understanding.route})
+    if decision.guardrail:
+        trace.add_span("guardrail", 0.0, extra={"layer": decision.guardrail})
 
     if decision.early_reply is not None:
         memory_turns = await _persist_dialog_turn(request, decision.early_reply)
@@ -438,18 +702,34 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
             memory_turns=memory_turns,
             path="early",
         )
+        _maybe_online(
+            decision=decision,
+            request=request,
+            model=decision.early_model,
+            guardrail=decision.guardrail,
+            settings=cfg,
+        )
+        _end_obs(trace, started=started, model=decision.early_model, settings=cfg)
         return ChatResponse(
             message=ChatMessage(role="assistant", content=decision.early_reply),
             conversation_id=request.conversation_id,
             model=decision.early_model or "unknown",
         )
 
+    if user_hour_exceeded(request.user_id, settings=cfg):
+        await _persist_dialog_turn(request, CAPACITY_REPLY)
+        _end_obs(trace, started=started, model="budget:user", settings=cfg)
+        return _capacity_response(request, decision, model="budget:user")
+
     fingerprint = _history_fingerprint(request)
-    cached = get_cached_llm_reply(fingerprint)
+    cached = None
+    if allow_llm_reply_cache(decision.understanding):
+        cached = get_cached_llm_reply(fingerprint)
     if cached is not None:
         model_name = f"cache:{cached.get('model') or cfg.llm_model}"
         packs = list(cached.get("knowledge_packs") or [])
         await _persist_dialog_turn(request, cached["content"])
+        trace.add_span("cache", 0.0, extra={"hit": True})
         _log_turn(
             event="que_chat_complete",
             decision=decision,
@@ -457,8 +737,18 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
             latency_ms=(time.perf_counter() - started) * 1000,
             model=model_name,
             cache_hit=True,
+            cache_layer="llm",
             knowledge_packs=packs,
         )
+        _maybe_online(
+            decision=decision,
+            request=request,
+            model=model_name,
+            cache_hit=True,
+            cache_layer="llm",
+            settings=cfg,
+        )
+        _end_obs(trace, started=started, model=model_name, settings=cfg)
         return ChatResponse(
             message=ChatMessage(role="assistant", content=cached["content"]),
             conversation_id=request.conversation_id,
@@ -470,9 +760,16 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
     # Resolve packs before generate so logs/response always show what was loaded.
     from app.knowledge import select_knowledge
 
+    t_ret = time.perf_counter()
     selection = select_knowledge(
         [{"role": m.role, "content": m.content} for m in request.messages],
         query=decision.resolution.resolved_query,
+        use_cache=allow_retrieval_cache(decision.understanding),
+    )
+    trace.add_span(
+        "retrieve",
+        (time.perf_counter() - t_ret) * 1000.0,
+        extra={"cache": allow_retrieval_cache(decision.understanding)},
     )
     _log_request_trace(
         request_id=decision.request_id,
@@ -483,7 +780,12 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
     )
 
     graph = get_que_graph()
-    initial = _request_to_input(request, resolution=decision.resolution)
+    initial = _request_to_input(
+        request,
+        resolution=decision.resolution,
+        understanding=decision.understanding,
+        request_id=decision.request_id,
+    )
     invoke_kwargs: dict = {}
     if mem_config is not None:
         invoke_kwargs["config"] = mem_config
@@ -501,6 +803,7 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
             knowledge_scores=selection.scores,
             knowledge_truncated=selection.truncated,
         )
+        _end_obs(trace, started=started, error=True, settings=cfg)
         raise
     except ValueError:
         _log_turn(
@@ -513,6 +816,7 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
             knowledge_scores=selection.scores,
             knowledge_truncated=selection.truncated,
         )
+        _end_obs(trace, started=started, error=True, settings=cfg)
         raise
     except Exception as exc:  # noqa: BLE001
         _log_turn(
@@ -525,18 +829,28 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
             knowledge_scores=selection.scores,
             knowledge_truncated=selection.truncated,
         )
+        _end_obs(trace, started=started, error=True, settings=cfg)
         raise LLMError(str(exc)) from exc
 
     content = _assistant_text(result.get("messages") or [])
     model_name = result.get("model_name") or cfg.llm_model
     packs = list(result.get("knowledge_packs") or selection.pack_ids)
     sources = list(result.get("sources_used") or [])
-    set_cached_llm_reply(
-        fingerprint,
-        content=content,
-        model=model_name,
-        knowledge_packs=packs,
+    content, out_model = _apply_output_guard(
+        content, request=request, messages=result.get("messages") or []
     )
+    if out_model:
+        model_name = out_model
+    cacheable = allow_llm_reply_cache(decision.understanding) and not str(model_name).startswith(
+        "guardrail:"
+    )
+    if cacheable:
+        set_cached_llm_reply(
+            fingerprint,
+            content=content,
+            model=model_name,
+            knowledge_packs=packs,
+        )
     _log_turn(
         event="que_chat_complete",
         decision=decision,
@@ -547,6 +861,12 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
         knowledge_scores=selection.scores,
         knowledge_truncated=selection.truncated,
     )
+    _maybe_online(
+        decision=decision,
+        request=request,
+        model=str(model_name),
+        settings=cfg,
+    )
     logger.info(
         "que_memory_saved",
         request_id=decision.request_id,
@@ -554,6 +874,9 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
         memory_turns=result.get("memory_turns"),
         path="graph",
     )
+    if out_model:
+        trace.add_span("guardrail", 0.0, extra={"layer": "output"})
+    _end_obs(trace, started=started, model=str(model_name), settings=cfg)
     return ChatResponse(
         message=ChatMessage(role="assistant", content=content),
         conversation_id=request.conversation_id,
@@ -563,192 +886,373 @@ async def complete(request: ChatRequest, *, settings: Settings | None = None) ->
     )
 
 
+async def stream_turn_events(
+    request: ChatRequest,
+    *,
+    settings: Settings | None = None,
+    decision: TurnDecision | None = None,
+) -> AsyncIterator[dict]:
+    """Yield SSE-ready dicts: status events then token events (same context as complete)."""
+    from app.knowledge import select_knowledge
+    from app.orchestration.agent_loop import iter_agent_loop
+    from app.orchestration.agent_status import status_event, tool_status_label
+
+    cfg = settings or get_settings()
+    started = time.perf_counter()
+    t_decide = time.perf_counter()
+    decision = decision or decide_turn(request)
+    decide_ms = (time.perf_counter() - t_decide) * 1000.0
+    thread_id, mem_config = _thread_config(request)
+    trace = _begin_obs(decision, request)
+    trace.add_span("decide", decide_ms, extra={"route": decision.understanding.route})
+    if decision.guardrail:
+        trace.add_span("guardrail", 0.0, extra={"layer": decision.guardrail})
+    model_used: str | None = None
+    errored = False
+    try:
+        yield status_event(stage="prepare", label="Reading your question…")
+
+        if decision.early_reply is not None:
+            memory_turns = await _persist_dialog_turn(request, decision.early_reply)
+            _log_turn(
+                event="que_chat_stream",
+                decision=decision,
+                request=request,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                model=decision.early_model,
+            )
+            logger.info(
+                "que_memory_saved",
+                request_id=decision.request_id,
+                thread_id=thread_id,
+                memory_turns=memory_turns,
+                path="early_stream",
+            )
+            _maybe_online(
+                decision=decision,
+                request=request,
+                model=decision.early_model,
+                guardrail=decision.guardrail,
+                settings=cfg,
+            )
+            model_used = decision.early_model
+            yield status_event(stage="generate", label="Writing answer…")
+            for piece in _chunk_text(decision.early_reply):
+                yield {"type": "token", "content": piece}
+            return
+
+        if user_hour_exceeded(request.user_id, settings=cfg):
+            await _persist_dialog_turn(request, CAPACITY_REPLY)
+            model_used = "budget:user"
+            yield status_event(stage="generate", label="Writing answer…")
+            for piece in _chunk_text(CAPACITY_REPLY):
+                yield {"type": "token", "content": piece}
+            return
+
+        fingerprint = _history_fingerprint(request)
+        cached = None
+        if allow_llm_reply_cache(decision.understanding):
+            cached = get_cached_llm_reply(fingerprint)
+        if cached is not None:
+            model_name = f"cache:{cached.get('model') or cfg.llm_model}"
+            packs = list(cached.get("knowledge_packs") or [])
+            await _persist_dialog_turn(request, cached["content"])
+            trace.add_span("cache", 0.0, extra={"hit": True})
+            _log_turn(
+                event="que_chat_stream",
+                decision=decision,
+                request=request,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                model=model_name,
+                cache_hit=True,
+                cache_layer="llm",
+                knowledge_packs=packs,
+            )
+            _maybe_online(
+                decision=decision,
+                request=request,
+                model=model_name,
+                cache_hit=True,
+                cache_layer="llm",
+                settings=cfg,
+            )
+            model_used = model_name
+            yield status_event(stage="generate", label="Writing answer…")
+            for piece in _chunk_text(cached["content"]):
+                yield {"type": "token", "content": piece}
+            return
+
+        t_ret = time.perf_counter()
+        selection = select_knowledge(
+            [{"role": m.role, "content": m.content} for m in request.messages],
+            query=decision.resolution.resolved_query,
+            use_cache=allow_retrieval_cache(decision.understanding),
+        )
+        trace.add_span(
+            "retrieve",
+            (time.perf_counter() - t_ret) * 1000.0,
+            extra={"cache": allow_retrieval_cache(decision.understanding)},
+        )
+        _log_request_trace(
+            request_id=decision.request_id,
+            request=request,
+            resolution=decision.resolution,
+            understanding=decision.understanding,
+            knowledge_packs=selection.pack_ids,
+        )
+
+        existing_dialog: list = []
+        if mem_config is not None:
+            try:
+                snap = await get_que_graph().aget_state(mem_config)
+                existing_dialog = list((snap.values or {}).get("dialog") or [])
+            except Exception:  # noqa: BLE001
+                existing_dialog = []
+
+        initial = _request_to_input(
+            request,
+            resolution=decision.resolution,
+            understanding=decision.understanding,
+            request_id=decision.request_id,
+        )
+        initial["dialog"] = existing_dialog
+        state = prepare_node(initial)
+        state = {**initial, **state}
+        state = {**state, **context_node(state)}
+        mode = (state.get("runtime_mode") or "knowledge").strip()
+        tool_name: str | None = None
+        if mode == "agent":
+            query = str(state.get("retrieval_query") or state.get("resolved_query") or "")
+            raw = str(state.get("raw_user_message") or "")
+            ui = state.get("ui_context") if isinstance(state.get("ui_context"), dict) else None
+            agent_result = None
+            async for event in iter_agent_loop(
+                query=query,
+                raw_query=raw or None,
+                ui_context=ui,
+                user_id=request.user_id,
+                route=state.get("understanding_route"),
+                request_id=decision.request_id,
+                settings=cfg,
+            ):
+                if event.kind == "before":
+                    yield status_event(
+                        stage="tool",
+                        label=tool_status_label(event.tool_name),
+                        tool=event.tool_name,
+                        step=event.step,
+                    )
+                elif event.kind == "after":
+                    yield status_event(
+                        stage="tool_done",
+                        label="Got the numbers — drafting next steps…",
+                        tool=event.tool_name,
+                        step=event.step,
+                    )
+                elif event.kind == "done":
+                    agent_result = event.result
+            if agent_result is not None:
+                state = {**state, **apply_agent_loop_result(state, agent_result)}
+                tool_name = state.get("tool_name")
+            packs = list(state.get("knowledge_packs") or [])
+        elif mode == "workflow":
+            from app.orchestration.runtime_mode import decide_runtime_mode_from_state
+
+            _mode, _reason, tool_sel = decide_runtime_mode_from_state(state, settings=cfg)
+            tool_name = tool_sel.tool.name if tool_sel and tool_sel.tool else None
+            yield status_event(
+                stage="tool",
+                label=tool_status_label(tool_name),
+                tool=tool_name,
+            )
+            state = {**state, **(await tools_node(state))}
+            tool_name = state.get("tool_name") or tool_name
+            if tool_name:
+                yield status_event(
+                    stage="tool_done",
+                    label="Got the numbers — drafting next steps…",
+                    tool=tool_name,
+                )
+            packs = list(state.get("knowledge_packs") or [])
+        else:
+            yield status_event(stage="knowledge", label="Searching Quizzer guides…")
+            state = knowledge_node(state)
+            packs = list(state.get("knowledge_packs") or selection.pack_ids)
+
+        messages = state["messages"]
+        dialog_after_prepare = list(state.get("dialog") or existing_dialog)
+
+        yield status_event(stage="generate", label="Writing answer…")
+
+        ok_llm, deny = allow_llm_call(decision.request_id, messages=messages, settings=cfg)
+        if not ok_llm:
+            model_used = deny or "budget:turn"
+            await _persist_dialog_turn(request, CAPACITY_REPLY)
+            for piece in _chunk_text(CAPACITY_REPLY):
+                yield {"type": "token", "content": piece}
+            return
+
+        collected: list[str] = []
+        lane_used = None
+        t_llm = time.perf_counter()
+        try:
+            async for piece, lane in astream_chat(
+                messages,
+                settings=cfg,
+                complexity=state.get("understanding_complexity"),
+                runtime_mode=state.get("runtime_mode"),
+            ):
+                collected.append(piece)
+                lane_used = lane
+                yield {"type": "token", "content": piece}
+        except LLMError:
+            errored = True
+            _log_turn(
+                event="que_chat_stream",
+                decision=decision,
+                request=request,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                error="llm_error",
+                knowledge_packs=packs,
+                knowledge_scores=selection.scores,
+                knowledge_truncated=selection.truncated,
+            )
+            raise
+        except ValueError:
+            errored = True
+            _log_turn(
+                event="que_chat_stream",
+                decision=decision,
+                request=request,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                error="bad_request",
+                knowledge_packs=packs,
+                knowledge_scores=selection.scores,
+                knowledge_truncated=selection.truncated,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001
+            errored = True
+            _log_turn(
+                event="que_chat_stream",
+                decision=decision,
+                request=request,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                error=type(exc).__name__,
+                knowledge_packs=packs,
+                knowledge_scores=selection.scores,
+                knowledge_truncated=selection.truncated,
+            )
+            raise LLMError(str(exc)) from exc
+
+        usage = last_llm_usage()
+        usd = usd_for_usage(usage)
+        note_llm_usage(
+            decision.request_id,
+            tokens=usage.total,
+            usd=usd,
+            user_id=request.user_id,
+        )
+        trace.add_span(
+            "llm",
+            (time.perf_counter() - t_llm) * 1000.0,
+            extra={
+                "stream": True,
+                "model": lane_used.model if lane_used is not None else None,
+                "key_index": lane_used.key_index if lane_used is not None else None,
+            },
+        )
+        if usage.total:
+            trace.prompt_tokens = usage.prompt_tokens
+            trace.completion_tokens = usage.completion_tokens
+            if usd is not None:
+                trace.cost_usd = usd
+            elif ":free" in (usage.model or "").casefold():
+                trace.cost_usd = 0.0
+
+        full = "".join(collected).strip()
+        model_name = lane_used.model if lane_used is not None else cfg.llm_model
+        if full:
+            full, out_model = _apply_output_guard(full, request=request, messages=messages)
+            if out_model:
+                model_name = out_model
+                trace.add_span("guardrail", 0.0, extra={"layer": "output"})
+            cacheable = allow_llm_reply_cache(decision.understanding) and not str(
+                model_name
+            ).startswith("guardrail:")
+            if cacheable:
+                set_cached_llm_reply(
+                    fingerprint,
+                    content=full,
+                    model=str(model_name),
+                    knowledge_packs=packs,
+                )
+            if mem_config is not None:
+                dialog = append_assistant(
+                    dialog_after_prepare,
+                    full,
+                    max_turns=max_dialog_turns(),
+                )
+                try:
+                    await get_que_graph().aupdate_state(
+                        mem_config,
+                        {
+                            **_request_to_input(
+                                request,
+                                resolution=decision.resolution,
+                                understanding=decision.understanding,
+                                request_id=decision.request_id,
+                            ),
+                            "dialog": dialog,
+                            "memory_turns": len(dialog),
+                            "knowledge_packs": packs,
+                        },
+                        as_node="generate",
+                    )
+                    logger.info(
+                        "que_memory_saved",
+                        request_id=decision.request_id,
+                        thread_id=thread_id,
+                        memory_turns=len(dialog),
+                        path="stream",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "que_memory_persist_failed",
+                        request_id=decision.request_id,
+                        thread_id=thread_id,
+                        error=str(exc),
+                        path="stream",
+                    )
+        model_used = str(model_name)
+        trace.add_span("generate", (time.perf_counter() - t_llm) * 1000.0)
+        _log_turn(
+            event="que_chat_stream",
+            decision=decision,
+            request=request,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            model=str(model_name),
+            knowledge_packs=packs,
+            knowledge_scores=selection.scores,
+            knowledge_truncated=selection.truncated,
+        )
+        _maybe_online(
+            decision=decision,
+            request=request,
+            model=str(model_name),
+            settings=cfg,
+        )
+    finally:
+        _end_obs(trace, started=started, error=errored, model=model_used, settings=cfg)
+
+
 async def stream_tokens(
     request: ChatRequest,
     *,
     settings: Settings | None = None,
     decision: TurnDecision | None = None,
 ) -> AsyncIterator[str]:
-    """Stream tokens after prepare → knowledge (same context as complete)."""
-    from app.core.llm import get_chat_model
-    from app.knowledge import select_knowledge
-
-    cfg = settings or get_settings()
-    started = time.perf_counter()
-    decision = decision or decide_turn(request)
-    thread_id, mem_config = _thread_config(request)
-
-    if decision.early_reply is not None:
-        memory_turns = await _persist_dialog_turn(request, decision.early_reply)
-        _log_turn(
-            event="que_chat_stream",
-            decision=decision,
-            request=request,
-            latency_ms=(time.perf_counter() - started) * 1000,
-            model=decision.early_model,
-        )
-        logger.info(
-            "que_memory_saved",
-            request_id=decision.request_id,
-            thread_id=thread_id,
-            memory_turns=memory_turns,
-            path="early_stream",
-        )
-        for piece in _chunk_text(decision.early_reply):
-            yield piece
-        return
-
-    fingerprint = _history_fingerprint(request)
-    cached = get_cached_llm_reply(fingerprint)
-    if cached is not None:
-        model_name = f"cache:{cached.get('model') or cfg.llm_model}"
-        packs = list(cached.get("knowledge_packs") or [])
-        await _persist_dialog_turn(request, cached["content"])
-        _log_turn(
-            event="que_chat_stream",
-            decision=decision,
-            request=request,
-            latency_ms=(time.perf_counter() - started) * 1000,
-            model=model_name,
-            cache_hit=True,
-            knowledge_packs=packs,
-        )
-        for piece in _chunk_text(cached["content"]):
-            yield piece
-        return
-
-    selection = select_knowledge(
-        [{"role": m.role, "content": m.content} for m in request.messages],
-        query=decision.resolution.resolved_query,
-    )
-    _log_request_trace(
-        request_id=decision.request_id,
-        request=request,
-        resolution=decision.resolution,
-        understanding=decision.understanding,
-        knowledge_packs=selection.pack_ids,
-    )
-
-    existing_dialog: list = []
-    if mem_config is not None:
-        try:
-            snap = await get_que_graph().aget_state(mem_config)
-            existing_dialog = list((snap.values or {}).get("dialog") or [])
-        except Exception:  # noqa: BLE001
-            existing_dialog = []
-
-    prepared = _prepare_with_knowledge(
-        request,
-        dialog=existing_dialog,
-        resolution=decision.resolution,
-    )
-    messages = prepared["messages"]
-    packs = list(prepared.get("knowledge_packs") or selection.pack_ids)
-    dialog_after_prepare = list(prepared.get("dialog") or existing_dialog)
-
-    collected: list[str] = []
-    try:
-        model = get_chat_model(settings=cfg)
-        async for chunk in model.astream(messages):
-            content = chunk.content
-            if isinstance(content, str) and content:
-                collected.append(content)
-                yield content
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
-                        piece = str(block["text"])
-                        collected.append(piece)
-                        yield piece
-                    elif isinstance(block, str) and block:
-                        collected.append(block)
-                        yield block
-    except LLMError:
-        _log_turn(
-            event="que_chat_stream",
-            decision=decision,
-            request=request,
-            latency_ms=(time.perf_counter() - started) * 1000,
-            error="llm_error",
-            knowledge_packs=packs,
-            knowledge_scores=selection.scores,
-            knowledge_truncated=selection.truncated,
-        )
-        raise
-    except ValueError:
-        _log_turn(
-            event="que_chat_stream",
-            decision=decision,
-            request=request,
-            latency_ms=(time.perf_counter() - started) * 1000,
-            error="bad_request",
-            knowledge_packs=packs,
-            knowledge_scores=selection.scores,
-            knowledge_truncated=selection.truncated,
-        )
-        raise
-    except Exception as exc:  # noqa: BLE001
-        _log_turn(
-            event="que_chat_stream",
-            decision=decision,
-            request=request,
-            latency_ms=(time.perf_counter() - started) * 1000,
-            error=type(exc).__name__,
-            knowledge_packs=packs,
-            knowledge_scores=selection.scores,
-            knowledge_truncated=selection.truncated,
-        )
-        raise LLMError(str(exc)) from exc
-
-    full = "".join(collected).strip()
-    model_name = getattr(model, "model_name", None) or getattr(model, "model", "") or cfg.llm_model
-    if full:
-        set_cached_llm_reply(
-            fingerprint,
-            content=full,
-            model=str(model_name),
-            knowledge_packs=packs,
-        )
-        if mem_config is not None:
-            dialog = append_assistant(
-                dialog_after_prepare,
-                full,
-                max_turns=max_dialog_turns(),
-            )
-            try:
-                await get_que_graph().aupdate_state(
-                    mem_config,
-                    {
-                        **_request_to_input(request, resolution=decision.resolution),
-                        "dialog": dialog,
-                        "memory_turns": len(dialog),
-                        "knowledge_packs": packs,
-                    },
-                    as_node="generate",
-                )
-                logger.info(
-                    "que_memory_saved",
-                    request_id=decision.request_id,
-                    thread_id=thread_id,
-                    memory_turns=len(dialog),
-                    path="stream",
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Never fail the user-visible stream because checkpoint write failed.
-                logger.warning(
-                    "que_memory_persist_failed",
-                    request_id=decision.request_id,
-                    thread_id=thread_id,
-                    error=str(exc),
-                    path="stream",
-                )
-    _log_turn(
-        event="que_chat_stream",
-        decision=decision,
-        request=request,
-        latency_ms=(time.perf_counter() - started) * 1000,
-        model=str(model_name),
-        knowledge_packs=packs,
-        knowledge_scores=selection.scores,
-        knowledge_truncated=selection.truncated,
-    )
+    """Token-only stream (tests / callers that ignore status events)."""
+    async for event in stream_turn_events(request, settings=settings, decision=decision):
+        if event.get("type") == "token" and event.get("content"):
+            yield str(event["content"])
