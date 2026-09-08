@@ -261,8 +261,7 @@ def test_new_topic_bug_report_not_glued_to_prior():
         ("user", "how to report a bug"),
     )
     resolved = resolve_request(messages)
-    assert resolved.is_follow_up is True
-    assert "new_topic_override" in resolved.reasons
+    assert resolved.is_follow_up is False
     assert "report" in resolved.resolved_query.casefold()
     assert "analyze" not in resolved.resolved_query.casefold()
     assert resolved.topic == "feedback"
@@ -283,3 +282,98 @@ def test_new_topic_bug_report_not_glued_to_prior():
             query=resolved.resolved_query,
         )
         assert "feedback" in packs.pack_ids
+
+
+def test_dashboard_metrics_cold_start_not_refused():
+    decision = decide_turn(
+        ChatRequest(
+            messages=[
+                {
+                    "role": "user",
+                    "content": "I want to ask about my metrics numbers of my Dashbaord",
+                }
+            ],
+            conversation_id="c-dash-metrics",
+        )
+    )
+    assert decision.understanding.scope == "in_scope"
+    assert decision.understanding.route != "refuse"
+    assert decision.early_model != "scope:refuse"
+
+
+def test_follow_up_after_dashboard_refuse_stays_in_scope():
+    """A prior refuse must not lock the rest of the chat to out-of-scope."""
+    messages = _msgs(
+        ("user", "I want to ask about my Dashbaord"),
+        (
+            "assistant",
+            "I only help with Quizzer — creating quizzes, exams, monitoring, and results.",
+        ),
+        ("user", "I want to ask about my metrics numbers of my Dashbaord"),
+    )
+    decision = decide_turn(
+        ChatRequest(
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            conversation_id="c-dash-follow",
+        )
+    )
+    assert decision.understanding.scope == "in_scope"
+    assert decision.understanding.route != "refuse"
+    assert decision.early_model != "scope:refuse"
+
+
+def test_exam_thread_first_query_is_not_refused():
+    """After a named-exam thread, chat-history asks must reach the model."""
+    messages = _msgs(
+        ("user", "Did you see one exam maded by me ,AI vs ML"),
+        (
+            "assistant",
+            "I can see your exam titled AI vs ML, which is currently PUBLISHED.",
+        ),
+        ("user", "How to chnage the verification schema of this exam"),
+        ("assistant", "Open Exams, then Settings, then Verification Schema."),
+        ("user", "How to enhance the experince of mine on this website"),
+        ("assistant", "Explore Create Exam, review questions, then check Analytics."),
+        ("user", "what is my first query ?,starting message tell me"),
+    )
+    resolved = resolve_request(messages)
+    assert resolved.thread_active is True
+    assert resolved.is_follow_up is True
+    assert "conversation_meta" in resolved.reasons
+    assert "first query" in resolved.resolved_query.casefold()
+    assert "verification" not in resolved.resolved_query.casefold()
+
+    decision = decide_turn(
+        ChatRequest(
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            conversation_id="c-exam-memory",
+        )
+    )
+    assert decision.early_reply is None
+    assert decision.early_model != "scope:refuse"
+    assert decision.understanding.scope == "in_scope"
+    assert decision.understanding.route != "refuse"
+
+
+def test_which_exam_after_generic_mid_thread_stays_in_scope():
+    messages = _msgs(
+        ("user", "Did you see one exam maded by me ,AI vs ML"),
+        (
+            "assistant",
+            "I can see your exam titled AI vs ML, which is currently PUBLISHED.",
+        ),
+        ("user", "How to enhance the experince of mine on this website"),
+        ("assistant", "Use Create Exam and Analytics."),
+        ("user", "I am talking about one exam ,which one ?"),
+    )
+    resolved = resolve_request(messages)
+    assert resolved.thread_active is True
+    assert resolved.is_follow_up is True
+    decision = decide_turn(
+        ChatRequest(
+            messages=[{"role": m.role, "content": m.content} for m in messages],
+            conversation_id="c-which-exam",
+        )
+    )
+    assert decision.early_model != "scope:refuse"
+    assert decision.understanding.scope == "in_scope"
