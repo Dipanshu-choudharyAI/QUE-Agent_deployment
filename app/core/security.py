@@ -57,6 +57,26 @@ def require_chat_auth(
     )
 
 
+def require_service_key_only(
+    x_que_service_key: str | None = Header(default=None, alias=SERVICE_KEY_HEADER),
+) -> QuePrincipal:
+    """Ops scrapes: shared service key only. A browser JWT is not enough."""
+    cfg = get_settings()
+    expected = cfg.que_service_key
+    provided = (x_que_service_key or "").strip()
+    if expected and provided and hmac.compare_digest(provided, expected):
+        return QuePrincipal(mode="service", user_id=None)
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service authentication is not configured",
+        )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing credentials",
+    )
+
+
 # Back-compat alias used by older imports / docs.
 require_service_key = require_chat_auth
 
