@@ -121,9 +121,26 @@ Every document follows this format:
 9. Register new documents in manifest.json with appropriate keywords.
 10. Update the last_verified date in frontmatter when re-checking.
 
-## Retrieval
+## Retrieval (Phase 2 dense + Phase 6 hybrid)
 
-CORE.md is always injected. manifest.json maps each document to keyword
-lists. The QUE agent matches the user's latest message against keywords
-to select up to max_guides additional documents. No embeddings or vector
-search — keyword matching only.
+**Hybrid (default when index + `bm25_corpus.json` exist):** dense Chroma
+candidates fused with chunk BM25 via reciprocal rank fusion (`QUE_RAG_HYBRID`).
+No-answer stays dense-gated (`QUE_RAG_MIN_SCORE`). Build/update:
+
+```bash
+uv run python -m app.knowledge --force
+uv run python scripts/run_retrieval_eval.py --mode hybrid --latency
+```
+
+**Dense-only:** set `QUE_RAG_HYBRID=false` or omit the BM25 sidecar.
+
+**Keyword (fallback):** CORE.md always injected; `manifest.json` keywords
+select up to `max_guides` guides when the Chroma index is missing or RAG
+is disabled (`QUE_RAG_ENABLED=false`).
+
+### Chunking rationale
+
+Split on `#` / `##` / `###` so each vector is about one UI path or decision.
+Oversized sections split by paragraph with overlap (~150 chars). Each chunk
+stores `doc_id`, path, title, section, content hash, corpus version, and
+embedding model for incremental re-index and citations.
