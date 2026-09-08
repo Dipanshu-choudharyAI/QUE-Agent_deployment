@@ -60,15 +60,25 @@ jobs:
       - name: Ruff
         run: uv run ruff check app tests
 
+      # Chroma CVEs are FastAPI multi-tenant server IDOR; no PyPI fix yet (≤1.5.9).
+      # Que uses embedded PersistentClient only — ignore until upstream ships a fix.
       - name: pip-audit (fail on High+)
         run: |
           uv export --frozen --no-dev --no-hashes -o /tmp/req-frozen.txt
-          uv run pip-audit -r /tmp/req-frozen.txt --progress-spinner off
+          uv run pip-audit -r /tmp/req-frozen.txt --progress-spinner off \
+            --ignore-vuln PYSEC-2026-311 \
+            --ignore-vuln CVE-2026-45830 \
+            --ignore-vuln CVE-2026-45831 \
+            --ignore-vuln CVE-2026-45833
 
       - name: Generate CycloneDX SBOM
         run: |
           uv export --frozen --no-dev --no-hashes -o /tmp/req-frozen.txt
-          uv run pip-audit -r /tmp/req-frozen.txt --format cyclonedx-json -o sbom-python.json
+          uv run pip-audit -r /tmp/req-frozen.txt --format cyclonedx-json -o sbom-python.json \
+            --ignore-vuln PYSEC-2026-311 \
+            --ignore-vuln CVE-2026-45830 \
+            --ignore-vuln CVE-2026-45831 \
+            --ignore-vuln CVE-2026-45833
 
       - name: Upload Python SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
