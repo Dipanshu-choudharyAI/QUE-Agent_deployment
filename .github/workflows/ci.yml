@@ -86,3 +86,13 @@ jobs:
           LLM_API_KEY: ""
           LLM_MODEL: test-model
         run: uv run python -m pytest tests/ -v
+
+      - name: Offline eval suite
+        env:
+          APP_ENV: local
+          QUE_SERVICE_KEY: ci-test-service-key-not-for-production
+          QUE_JWT_SECRET: ci-test-que-jwt-secret-not-for-production-xx
+          ALLOW_INSECURE_LOCAL_NO_AUTH: "false"
+          LLM_API_KEY: ""
+          LLM_MODEL: test-model
+        run: uv run python scripts/run_eval_suite.py --offline --fail-on-regression
